@@ -56,7 +56,18 @@ def webhook():
         usd, btc = get_balances()
         price = get_price()
 
-        qty = (usd * RISK_PERCENT) / price
+        # === SAFE POSITION SIZE ===
+	raw_qty = (usd * RISK_PERCENT) / price
+
+	# round to Kraken precision (8 decimals)
+	qty = round(raw_qty, 8)
+
+	# minimum BTC order size
+	MIN_QTY = 0.00001
+
+	if qty < MIN_QTY:
+    	print(f"⚠️ Order too small: {qty}", flush=True)
+    	return "Order too small"
 
         # === BUY ===
         if side == "buy":
