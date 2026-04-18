@@ -4,6 +4,7 @@ import time
 
 app = Flask(__name__)
 
+# === KRAKEN SETUP ===
 api = ccxt.kraken({
     'apiKey': 'nloJM+TPJGCYdu5+KobDyFDAd+DPZGCuHv7+CI1wu9bsOpUilxssMuKB',
     'secret': 'vWzTX6FWytEDTn2t8wqHi1KIqb3JY/WkpEYzdbfOunzuS9wM8ALqOa9XlpPI4cnfav9iClQkTyI7i3fqJXNLsA==',
@@ -15,8 +16,9 @@ SYMBOL = "BTC/USD"
 # === SETTINGS ===
 RISK_PERCENT = 0.07
 COOLDOWN = 15
+MIN_QTY = 0.00001
 
-# === TRACK POSITIONS PER STRATEGY ===
+# === STATE TRACKING ===
 positions = {
     "breakout": False,
     "mean": False
@@ -24,6 +26,7 @@ positions = {
 
 last_trade_time = 0
 
+# === HELPERS ===
 def get_balances():
     balance = api.fetch_balance()
     usd = balance['total'].get('USD', 0)
@@ -33,6 +36,12 @@ def get_balances():
 def get_price():
     return api.fetch_ticker(SYMBOL)['last']
 
+def calculate_qty(usd, price):
+    raw_qty = (usd * RISK_PERCENT) / price
+    qty = round(raw_qty, 8)
+    return qty
+
+# === WEBHOOK ===
 @app.route('/webhook', methods=['POST'])
 def webhook():
     global last_trade_time
@@ -48,58 +57,60 @@ def webhook():
 
     now = time.time()
 
+    # === COOLDOWN ===
     if now - last_trade_time < COOLDOWN:
-        print("⏱ cooldown", flush=True)
-        return "cooldown"
+        print("⏱ Cooldown active", flush=True)
+        return "Cooldown"
 
     try:
         usd, btc = get_balances()
         price = get_price()
 
-        # === SAFE POSITION SIZE ===
-	raw_qty = (usd * RISK_PERCENT) / price
+        print(f"USD: {usd}, BTC: {btc}, Price: {price}", flush=True)
 
-	# round to Kraken precision (8 decimals)
-	qty = round(raw_qty, 8)
+        qty = calculate_qty(usd, price)
 
-	# minimum BTC order size
-	MIN_QTY = 0.00001
+        # === MIN SIZE CHECK ===
+        if qty < MIN_QTY:
+            print(f"⚠️ Order too small: {qty}", flush=True)
+            return "Order too small"
 
-	if qty < MIN_QTY:
-    	print(f"⚠️ Order too small: {qty}", flush=True)
-    	return "Order too small"
-
-        # === BUY ===
+        # ======================
+        # BUY
+        # ======================
         if side == "buy":
             if positions[strategy]:
-                print(f"{strategy} already in position", flush=True)
-                return "already in"
+                print(f"⚠️ {strategy} already in position", flush=True)
+                return "Already in position"
 
             order = api.create_market_order(SYMBOL, "buy", qty)
             positions[strategy] = True
             last_trade_time = now
 
-            print(f"✅ BUY {strategy}", flush=True)
-            return "buy ok"
+            print(f"✅ BUY {strategy}: {qty}", flush=True)
+            return "Buy executed"
 
-        # === SELL ===
+        # ======================
+        # SELL
+        # ======================
         elif side == "sell":
             if not positions[strategy]:
-                print(f"{strategy} no position", flush=True)
-                return "no position"
+                print(f"⚠️ {strategy} no position", flush=True)
+                return "No position"
 
             order = api.create_market_order(SYMBOL, "sell", btc)
             positions[strategy] = False
             last_trade_time = now
 
-            print(f"✅ SELL {strategy}", flush=True)
-            return "sell ok"
+            print(f"✅ SELL {strategy}: {btc}", flush=True)
+            return "Sell executed"
 
-        return "invalid"
+        return "Invalid action"
 
     except Exception as e:
         print("❌ ERROR:", e, flush=True)
         return str(e)
 
+# === RUN SERVER ===
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
