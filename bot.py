@@ -13,7 +13,7 @@ api = ccxt.kraken({
 @app.route('/webhook', methods=['POST'])
 def webhook():
     data = request.json
-    print("Received:", data)
+    print("🔥 WEBHOOK RECEIVED:", data, flush=True)
 
     symbol = "BTC/USD"
     side = data.get("action")
