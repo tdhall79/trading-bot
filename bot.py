@@ -13,88 +13,90 @@ api = ccxt.kraken({
 
 SYMBOL = "BTC/USD"
 
-# === STATE TRACKING ===
-last_action = None
-last_trade_time = 0
-cooldown_seconds = 30  # prevents rapid repeat trades
+# === SETTINGS ===
+RISK_PERCENT = 0.07          # 7% per trade
+MAX_DRAWDOWN = 0.20          # 20% max drawdown stop
+COOLDOWN = 30                # seconds between trades
 
-# === GET BTC BALANCE ===
-def get_btc_balance():
+# === STATE ===
+starting_equity = None
+last_trade_time = 0
+last_action = None
+
+# === GET BALANCE ===
+def get_balances():
     balance = api.fetch_balance()
-    return balance['total'].get('BTC', 0)
+    usd = balance['total'].get('USD', 0)
+    btc = balance['total'].get('BTC', 0)
+    return usd, btc
+
+# === CALCULATE POSITION SIZE ===
+def calculate_position_size(usd_balance, price):
+    usd_to_use = usd_balance * RISK_PERCENT
+    qty = usd_to_use / price
+    return qty
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    global last_action, last_trade_time
+    global starting_equity, last_trade_time, last_action
 
     data = request.json
     print("🔥 WEBHOOK RECEIVED:", data, flush=True)
 
     side = data.get("action")
-    qty = float(data.get("quantity"))
-
     now = time.time()
 
     try:
-        btc_balance = get_btc_balance()
-        print(f"Current BTC balance: {btc_balance}", flush=True)
+        usd_balance, btc_balance = get_balances()
+        ticker = api.fetch_ticker(SYMBOL)
+        price = ticker['last']
 
-        # ======================
-        # COOLDOWN PROTECTION
-        # ======================
-        if now - last_trade_time < cooldown_seconds:
-            print("⏱ Cooldown active — skipping", flush=True)
-            return "Cooldown active"
+        equity = usd_balance + (btc_balance * price)
 
-        # ======================
-        # BUY LOGIC
-        # ======================
+        if starting_equity is None:
+            starting_equity = equity
+
+        drawdown = (starting_equity - equity) / starting_equity
+
+        print(f"Equity: {equity}, Drawdown: {drawdown}", flush=True)
+
+        # === DRAWDOWN PROTECTION ===
+        if drawdown >= MAX_DRAWDOWN:
+            print("🚨 Max drawdown hit — trading stopped", flush=True)
+            return "Drawdown limit reached"
+
+        # === COOLDOWN ===
+        if now - last_trade_time < COOLDOWN:
+            print("⏱ Cooldown active", flush=True)
+            return "Cooldown"
+
+        qty = calculate_position_size(usd_balance, price)
+
+        # === BUY ===
         if side == "buy":
             if btc_balance > 0:
-                print("⚠️ Already holding BTC — skip", flush=True)
+                print("⚠️ Already in position", flush=True)
                 return "Already holding"
 
-            if last_action == "buy":
-                print("⚠️ Last action was buy — skip duplicate", flush=True)
-                return "Duplicate buy blocked"
+            order = api.create_market_order(SYMBOL, "buy", qty)
+            print("✅ BUY:", order, flush=True)
 
-            try:
-                order = api.create_market_order(SYMBOL, "buy", qty)
-                print("✅ BUY ORDER PLACED:", order, flush=True)
-                last_action = "buy"
-                last_trade_time = now
-                return "buy executed"
+            last_action = "buy"
+            last_trade_time = now
+            return "buy executed"
 
-            except Exception as e:
-                print("❌ BUY FAILED:", e, flush=True)
-                last_action = "buy"  # still block spam
-                last_trade_time = now
-                return str(e)
-
-        # ======================
-        # SELL LOGIC
-        # ======================
+        # === SELL ===
         elif side == "sell":
             if btc_balance <= 0:
-                print("⚠️ No BTC to sell — skip", flush=True)
+                print("⚠️ No BTC to sell", flush=True)
                 return "No BTC"
 
-            if last_action == "sell":
-                print("⚠️ Last action was sell — skip duplicate", flush=True)
-                return "Duplicate sell blocked"
+            order = api.create_market_order(SYMBOL, "sell", btc_balance)
+            print("✅ SELL:", order, flush=True)
 
-            try:
-                order = api.create_market_order(SYMBOL, "sell", qty)
-                print("✅ SELL ORDER PLACED:", order, flush=True)
-                last_action = "sell"
-                last_trade_time = now
-                return "sell executed"
-
-            except Exception as e:
-                print("❌ SELL FAILED:", e, flush=True)
-                last_action = "sell"
-                last_trade_time = now
-                return str(e)
+            last_action = "sell"
+            last_trade_time = now
+            return "sell executed"
 
         else:
             return "Invalid action"
