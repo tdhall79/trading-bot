@@ -4,102 +4,87 @@ import time
 
 app = Flask(__name__)
 
-# === KRAKEN KEYS ===
 api = ccxt.kraken({
-    'apiKey': 'nloJM+TPJGCYdu5+KobDyFDAd+DPZGCuHv7+CI1wu9bsOpUilxssMuKB',
-    'secret': 'vWzTX6FWytEDTn2t8wqHi1KIqb3JY/WkpEYzdbfOunzuS9wM8ALqOa9XlpPI4cnfav9iClQkTyI7i3fqJXNLsA==',
+    'apiKey': 'YOUR_API_KEY',
+    'secret': 'YOUR_SECRET_KEY',
     'enableRateLimit': True
 })
 
 SYMBOL = "BTC/USD"
 
 # === SETTINGS ===
-RISK_PERCENT = 0.07          # 7% per trade
-MAX_DRAWDOWN = 0.20          # 20% max drawdown stop
-COOLDOWN = 30                # seconds between trades
+RISK_PERCENT = 0.07
+COOLDOWN = 15
 
-# === STATE ===
-starting_equity = None
+# === TRACK POSITIONS PER STRATEGY ===
+positions = {
+    "breakout": False,
+    "mean": False
+}
+
 last_trade_time = 0
-last_action = None
 
-# === GET BALANCE ===
 def get_balances():
     balance = api.fetch_balance()
     usd = balance['total'].get('USD', 0)
     btc = balance['total'].get('BTC', 0)
     return usd, btc
 
-# === CALCULATE POSITION SIZE ===
-def calculate_position_size(usd_balance, price):
-    usd_to_use = usd_balance * RISK_PERCENT
-    qty = usd_to_use / price
-    return qty
+def get_price():
+    return api.fetch_ticker(SYMBOL)['last']
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    global starting_equity, last_trade_time, last_action
+    global last_trade_time
 
     data = request.json
-    print("🔥 WEBHOOK RECEIVED:", data, flush=True)
+    print("🔥 RECEIVED:", data, flush=True)
 
     side = data.get("action")
+    strategy = data.get("strategy")
+
+    if strategy not in positions:
+        return "Invalid strategy"
+
     now = time.time()
 
+    if now - last_trade_time < COOLDOWN:
+        print("⏱ cooldown", flush=True)
+        return "cooldown"
+
     try:
-        usd_balance, btc_balance = get_balances()
-        ticker = api.fetch_ticker(SYMBOL)
-        price = ticker['last']
+        usd, btc = get_balances()
+        price = get_price()
 
-        equity = usd_balance + (btc_balance * price)
-
-        if starting_equity is None:
-            starting_equity = equity
-
-        drawdown = (starting_equity - equity) / starting_equity
-
-        print(f"Equity: {equity}, Drawdown: {drawdown}", flush=True)
-
-        # === DRAWDOWN PROTECTION ===
-        if drawdown >= MAX_DRAWDOWN:
-            print("🚨 Max drawdown hit — trading stopped", flush=True)
-            return "Drawdown limit reached"
-
-        # === COOLDOWN ===
-        if now - last_trade_time < COOLDOWN:
-            print("⏱ Cooldown active", flush=True)
-            return "Cooldown"
-
-        qty = calculate_position_size(usd_balance, price)
+        qty = (usd * RISK_PERCENT) / price
 
         # === BUY ===
         if side == "buy":
-            if btc_balance > 0:
-                print("⚠️ Already in position", flush=True)
-                return "Already holding"
+            if positions[strategy]:
+                print(f"{strategy} already in position", flush=True)
+                return "already in"
 
             order = api.create_market_order(SYMBOL, "buy", qty)
-            print("✅ BUY:", order, flush=True)
-
-            last_action = "buy"
+            positions[strategy] = True
             last_trade_time = now
-            return "buy executed"
+
+            print(f"✅ BUY {strategy}", flush=True)
+            return "buy ok"
 
         # === SELL ===
         elif side == "sell":
-            if btc_balance <= 0:
-                print("⚠️ No BTC to sell", flush=True)
-                return "No BTC"
+            if not positions[strategy]:
+                print(f"{strategy} no position", flush=True)
+                return "no position"
 
-            order = api.create_market_order(SYMBOL, "sell", btc_balance)
-            print("✅ SELL:", order, flush=True)
-
-            last_action = "sell"
+            order = api.create_market_order(SYMBOL, "sell", btc)
+            positions[strategy] = False
             last_trade_time = now
-            return "sell executed"
 
-        else:
-            return "Invalid action"
+            print(f"✅ SELL {strategy}", flush=True)
+            return "sell ok"
+
+        return "invalid"
 
     except Exception as e:
         print("❌ ERROR:", e, flush=True)
