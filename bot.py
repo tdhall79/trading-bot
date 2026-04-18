@@ -5,8 +5,8 @@ app = Flask(__name__)
 
 # === KRAKEN KEYS ===
 api = ccxt.kraken({
-    'apiKey': nloJM+TPJGCYdu5+KobDyFDAd+DPZGCuHv7+CI1wu9bsOpUilxssMuKB
-    'secret': vWzTX6FWytEDTn2t8wqHi1KIqb3JY/WkpEYzdbfOunzuS9wM8ALqOa9XlpPI4cnfav9iClQkTyI7i3fqJXNLsA==
+    'apiKey': 'nloJM+TPJGCYdu5+KobDyFDAd+DPZGCuHv7+CI1wu9bsOpUilxssMuKB',
+    'secret': 'vWzTX6FWytEDTn2t8wqHi1KIqb3JY/WkpEYzdbfOunzuS9wM8ALqOa9XlpPI4cnfav9iClQkTyI7i3fqJXNLsA=='
     'enableRateLimit': True,
 })
 
