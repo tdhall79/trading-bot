@@ -6,54 +6,47 @@ app = Flask(__name__)
 
 # === KRAKEN SETUP ===
 api = ccxt.kraken({
-    'apiKey': 'nloJM+TPJGCYdu5+KobDyFDAd+DPZGCuHv7+CI1wu9bsOpUilxssMuKB',
-    'secret': 'vWzTX6FWytEDTn2t8wqHi1KIqb3JY/WkpEYzdbfOunzuS9wM8ALqOa9XlpPI4cnfav9iClQkTyI7i3fqJXNLsA==',
+    'apiKey': 'bHdCNRhjstY9Pi47ZkzbJpcVGJShaG4lJAX7P/mXhBMXP86oCQTpzxHT',
+    'secret': 'a1QozQ48u4Ks4baZgvAWOBHvQjWc+j6tbbyY3v4K3MKY572qaaE+CrjV7nbXs5E4I7wKWAjedMNQDPqY1ZelHg==',
     'enableRateLimit': True
 })
 
-SYMBOL = "BTC/USD"
+SYMBOL = "SOL/USD"
 
 # === SETTINGS ===
-RISK_PERCENT = 0.07
-COOLDOWN = 15
-MIN_QTY = 0.00001
+ALLOCATION = 0.85   # 85% of account per trade
+COOLDOWN = 10       # seconds between trades
+MIN_QTY = 0.01      # minimum SOL size
 
 # === STATE TRACKING ===
-positions = {
-    "breakout": False,
-    "mean": False
-}
-
+in_position = False
 last_trade_time = 0
 
 # === HELPERS ===
-def get_balances():
-    balance = api.fetch_balance()
-    usd = balance['total'].get('USD', 0)
-    btc = balance['total'].get('BTC', 0)
-    return usd, btc
+def get_balance():
+    for i in range(3):
+        try:
+            balance = api.fetch_balance()
+            usd = balance['total'].get('USD', 0)
+            sol = balance['total'].get('SOL', 0)
+            return usd, sol
+        except Exception as e:
+            print(f"❌ Balance error {i+1}: {e}", flush=True)
+            time.sleep(2)
+    return 0, 0
 
 def get_price():
     return api.fetch_ticker(SYMBOL)['last']
 
-def calculate_qty(usd, price):
-    raw_qty = (usd * RISK_PERCENT) / price
-    qty = round(raw_qty, 8)
-    return qty
-
 # === WEBHOOK ===
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    global last_trade_time
+    global in_position, last_trade_time
 
     data = request.json
     print("🔥 RECEIVED:", data, flush=True)
 
     side = data.get("action")
-    strategy = data.get("strategy")
-
-    if strategy not in positions:
-        return "Invalid strategy"
 
     now = time.time()
 
@@ -63,52 +56,75 @@ def webhook():
         return "Cooldown"
 
     try:
-        usd, btc = get_balances()
+        usd, sol = get_balance()
         price = get_price()
 
-        print(f"USD: {usd}, BTC: {btc}, Price: {price}", flush=True)
-
-        qty = calculate_qty(usd, price)
-
-        # === MIN SIZE CHECK ===
-        if qty < MIN_QTY:
-            print(f"⚠️ Order too small: {qty}", flush=True)
-            return "Order too small"
+        print(f"USD: {usd}, SOL: {sol}, Price: {price}", flush=True)
 
         # ======================
         # BUY
         # ======================
         if side == "buy":
-            if positions[strategy]:
-                print(f"⚠️ {strategy} already in position", flush=True)
+            if in_position:
+                print("⚠️ Already in position", flush=True)
                 return "Already in position"
 
-            order = api.create_market_order(SYMBOL, "buy", qty)
-            positions[strategy] = True
+            usd_to_use = usd * ALLOCATION
+            amount = usd_to_use / price
+            amount = round(amount, 4)
+
+            if amount < MIN_QTY:
+                print(f"⚠️ Order too small: {amount}", flush=True)
+                return "Too small"
+
+            order = api.create_market_order(SYMBOL, "buy", amount)
+
+            in_position = True
             last_trade_time = now
 
-            print(f"✅ BUY {strategy}: {qty}", flush=True)
+            print(f"✅ BUY: {amount} SOL (~${usd_to_use})", flush=True)
             return "Buy executed"
 
         # ======================
         # SELL
         # ======================
         elif side == "sell":
-            if not positions[strategy]:
-                print(f"⚠️ {strategy} no position", flush=True)
+            if not in_position:
+                print("⚠️ No position", flush=True)
                 return "No position"
 
-            order = api.create_market_order(SYMBOL, "sell", btc)
-            positions[strategy] = False
-            last_trade_time = now
+            # Retry logic (VERY IMPORTANT)
+            for attempt in range(5):
+                try:
+                    usd, sol = get_balance()
 
-            print(f"✅ SELL {strategy}: {btc}", flush=True)
-            return "Sell executed"
+                    print(f"Sell attempt {attempt+1} | SOL: {sol}", flush=True)
+
+                    if sol <= 0:
+                        print("⚠️ No SOL yet, retrying...", flush=True)
+                        time.sleep(2)
+                        continue
+
+                    sol = round(sol, 4)
+
+                    order = api.create_market_order(SYMBOL, "sell", sol)
+
+                    in_position = False
+                    last_trade_time = now
+
+                    print(f"✅ SELL: {sol} SOL", flush=True)
+                    return "Sell executed"
+
+                except Exception as e:
+                    print(f"❌ SELL ERROR {attempt+1}: {e}", flush=True)
+                    time.sleep(2)
+
+            return "Sell failed"
 
         return "Invalid action"
 
     except Exception as e:
-        print("❌ ERROR:", e, flush=True)
+        print("❌ ERROR FULL:", repr(e), flush=True)
         return str(e)
 
 # === RUN SERVER ===
