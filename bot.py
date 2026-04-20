@@ -18,6 +18,12 @@ ALLOCATION = 0.85   # 85% of account per trade
 COOLDOWN = 10       # seconds between trades
 MIN_QTY = 0.01      # minimum SOL size
 
+# === MODE ===
+MODE = "TEST"   # change to "LIVE" when ready
+
+TEST_ALLOCATION = 0.05   # 5% for testing (~$500)
+LIVE_ALLOCATION = 0.85   # 85% for real trading
+
 # === STATE TRACKING ===
 in_position = False
 last_trade_time = 0
@@ -60,6 +66,7 @@ def webhook():
         price = get_price()
 
         print(f"USD: {usd}, SOL: {sol}, Price: {price}", flush=True)
+	print(f"🚦 MODE: {MODE} | Using {allocation*100:.1f}% of account", flush=True)
 
         # ======================
         # BUY
@@ -69,7 +76,12 @@ def webhook():
                 print("⚠️ Already in position", flush=True)
                 return "Already in position"
 
-            usd_to_use = usd * ALLOCATION
+            if MODE == "TEST":
+    allocation = TEST_ALLOCATION
+else:
+    allocation = LIVE_ALLOCATION
+
+usd_to_use = usd * allocation
             amount = usd_to_use / price
             amount = round(amount, 4)
 
