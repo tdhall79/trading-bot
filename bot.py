@@ -1,144 +1,138 @@
-from flask import Flask, request
+from flask import Flask, request, jsonify
+import os
 import ccxt
-import time
+import alpaca_trade_api as tradeapi
 
 app = Flask(__name__)
 
-# === KRAKEN SETUP ===
-api = ccxt.kraken({
-    'apiKey': 'bHdCNRhjstY9Pi47ZkzbJpcVGJShaG4lJAX7P/mXhBMXP86oCQTpzxHT',
-    'secret': 'a1QozQ48u4Ks4baZgvAWOBHvQjWc+j6tbbyY3v4K3MKY572qaaE+CrjV7nbXs5E4I7wKWAjedMNQDPqY1ZelHg==',
-    'enableRateLimit': True
+# =========================
+# CONFIG
+# =========================
+MODE = "LIVE"  # or "PAPER"
+
+# % of account per trade (adjust if needed)
+ALLOCATION = 0.10  # 10%
+
+# =========================
+# KRAKEN SETUP (BTC)
+# =========================
+kraken = ccxt.kraken({
+    "apiKey": os.environ.get("KRAKEN_API_KEY"),
+    "secret": os.environ.get("KRAKEN_SECRET"),
+    "enableRateLimit": True
 })
 
-SYMBOL = "SOL/USD"
+KRAKEN_SYMBOL = "BTC/USD"
 
-# === SETTINGS ===
-ALLOCATION = 0.85   # 85% of account per trade
-COOLDOWN = 10       # seconds between trades
-MIN_QTY = 0.01      # minimum SOL size
+# =========================
+# ALPACA SETUP (STOCKS)
+# =========================
+alpaca = tradeapi.REST(
+    os.environ.get("ALPACA_API_KEY"),
+    os.environ.get("ALPACA_SECRET"),
+    base_url="https://api.alpaca.markets" if MODE == "LIVE" else "https://paper-api.alpaca.markets"
+)
 
-# === MODE ===
-MODE = "TEST"   # change to "LIVE" when ready
+# =========================
+# HELPERS
+# =========================
+def get_kraken_balance():
+    balance = kraken.fetch_balance()
+    return balance["total"]["USD"]
 
-TEST_ALLOCATION = 0.05   # 5% for testing (~$500)
-LIVE_ALLOCATION = 0.85   # 85% for real trading
+def get_alpaca_equity():
+    account = alpaca.get_account()
+    return float(account.equity)
 
-# === STATE TRACKING ===
-in_position = False
-last_trade_time = 0
+def get_alpaca_position_qty(symbol):
+    try:
+        pos = alpaca.get_position(symbol)
+        return float(pos.qty)
+    except:
+        return 0.0
 
-# === HELPERS ===
-def get_balance():
-    for i in range(3):
-        try:
-            balance = api.fetch_balance()
-            usd = balance['total'].get('USD', 0)
-            sol = balance['total'].get('SOL', 0)
-            return usd, sol
-        except Exception as e:
-            print(f"❌ Balance error {i+1}: {e}", flush=True)
-            time.sleep(2)
-    return 0, 0
+# =========================
+# ROUTES
+# =========================
+@app.route("/", methods=["GET"])
+def home():
+    return "Bot is live"
 
-def get_price():
-    return api.fetch_ticker(SYMBOL)['last']
-
-# === WEBHOOK ===
-@app.route('/webhook', methods=['POST'])
+@app.route("/webhook", methods=["POST"])
 def webhook():
-    global in_position, last_trade_time
-
     data = request.json
-    print("🔥 RECEIVED:", data, flush=True)
+    print(f"Incoming: {data}", flush=True)
 
-    side = data.get("action")
-
-    now = time.time()
-
-    # === COOLDOWN ===
-    if now - last_trade_time < COOLDOWN:
-        print("⏱ Cooldown active", flush=True)
-        return "Cooldown"
+    action = data.get("action")   # "buy" or "sell"
+    symbol = data.get("symbol")   # "BTCUSD", "NVDA", etc.
+    price = float(data.get("price", 0))
 
     try:
-        usd, sol = get_balance()
-        price = get_price()
+        # =========================
+        # BTC → KRAKEN
+        # =========================
+        if symbol == "BTCUSD":
+            usd_balance = get_kraken_balance()
+            allocation_value = usd_balance * ALLOCATION
 
-        print(f"USD: {usd}, SOL: {sol}, Price: {price}", flush=True)
-	print(f"🚦 MODE: {MODE} | Using {allocation*100:.1f}% of account", flush=True)
+            if action == "buy":
+                qty = allocation_value / price
+                qty = float(f"{qty:.8f}")  # Kraken precision
 
-        # ======================
-        # BUY
-        # ======================
-        if side == "buy":
-            if in_position:
-                print("⚠️ Already in position", flush=True)
-                return "Already in position"
+                order = kraken.create_market_buy_order(KRAKEN_SYMBOL, qty)
+                print(f"BTC BUY: {qty}", flush=True)
 
-            if MODE == "TEST":
-    allocation = TEST_ALLOCATION
-else:
-    allocation = LIVE_ALLOCATION
+            elif action == "sell":
+                btc_balance = kraken.fetch_balance()["total"]["BTC"]
 
-usd_to_use = usd * allocation
-            amount = usd_to_use / price
-            amount = round(amount, 4)
+                if btc_balance > 0:
+                    order = kraken.create_market_sell_order(KRAKEN_SYMBOL, btc_balance)
+                    print(f"BTC SELL: {btc_balance}", flush=True)
 
-            if amount < MIN_QTY:
-                print(f"⚠️ Order too small: {amount}", flush=True)
-                return "Too small"
+        # =========================
+        # STOCKS → ALPACA
+        # =========================
+        else:
+            equity = get_alpaca_equity()
+            allocation_value = equity * ALLOCATION
 
-            order = api.create_market_order(SYMBOL, "buy", amount)
+            if action == "buy":
+                qty = int(allocation_value / price)
 
-            in_position = True
-            last_trade_time = now
+                if qty > 0:
+                    alpaca.submit_order(
+                        symbol=symbol,
+                        qty=qty,
+                        side="buy",
+                        type="market",
+                        time_in_force="day"
+                    )
+                    print(f"{symbol} BUY: {qty}", flush=True)
 
-            print(f"✅ BUY: {amount} SOL (~${usd_to_use})", flush=True)
-            return "Buy executed"
+            elif action == "sell":
+                qty = get_alpaca_position_qty(symbol)
 
-        # ======================
-        # SELL
-        # ======================
-        elif side == "sell":
-            if not in_position:
-                print("⚠️ No position", flush=True)
-                return "No position"
+                if qty > 0:
+                    alpaca.submit_order(
+                        symbol=symbol,
+                        qty=qty,
+                        side="sell",
+                        type="market",
+                        time_in_force="day"
+                    )
+                    print(f"{symbol} SELL: {qty}", flush=True)
 
-            # Retry logic (VERY IMPORTANT)
-            for attempt in range(5):
-                try:
-                    usd, sol = get_balance()
-
-                    print(f"Sell attempt {attempt+1} | SOL: {sol}", flush=True)
-
-                    if sol <= 0:
-                        print("⚠️ No SOL yet, retrying...", flush=True)
-                        time.sleep(2)
-                        continue
-
-                    sol = round(sol, 4)
-
-                    order = api.create_market_order(SYMBOL, "sell", sol)
-
-                    in_position = False
-                    last_trade_time = now
-
-                    print(f"✅ SELL: {sol} SOL", flush=True)
-                    return "Sell executed"
-
-                except Exception as e:
-                    print(f"❌ SELL ERROR {attempt+1}: {e}", flush=True)
-                    time.sleep(2)
-
-            return "Sell failed"
-
-        return "Invalid action"
+        return jsonify({"status": "success"})
 
     except Exception as e:
-        print("❌ ERROR FULL:", repr(e), flush=True)
-        return str(e)
+        print(f"ERROR: {str(e)}", flush=True)
+        return jsonify({"status": "error", "message": str(e)}), 500
 
-# === RUN SERVER ===
+
+# =========================
+# RUN (RENDER FIX)
+# =========================
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    port = int(os.environ.get("PORT", 10000))
+    print(f"🚦 MODE: {MODE} | Using {ALLOCATION*100:.1f}% allocation", flush=True)
+    app.run(host="0.0.0.0", port=port)
