@@ -1,20 +1,17 @@
 from flask import Flask, request, jsonify
 import os
 import ccxt
-import alpaca_trade_api as tradeapi
 
 app = Flask(__name__)
 
 # =========================
 # CONFIG
 # =========================
-MODE = "LIVE"  # or "PAPER"
-
-# % of account per trade (adjust if needed)
-ALLOCATION = 0.10  # 10%
+MODE = "LIVE"
+ALLOCATION = 0.75  # 75%
 
 # =========================
-# KRAKEN SETUP (BTC)
+# KRAKEN SETUP
 # =========================
 kraken = ccxt.kraken({
     "apiKey": os.environ.get("KRAKEN_API_KEY"),
@@ -22,41 +19,29 @@ kraken = ccxt.kraken({
     "enableRateLimit": True
 })
 
-KRAKEN_SYMBOL = "BTC/USD"
-
-# =========================
-# ALPACA SETUP (STOCKS)
-# =========================
-alpaca = tradeapi.REST(
-    os.environ.get("ALPACA_API_KEY"),
-    os.environ.get("ALPACA_SECRET"),
-    base_url="https://api.alpaca.markets" if MODE == "LIVE" else "https://paper-api.alpaca.markets"
-)
+# Map TradingView symbols → Kraken pairs
+SYMBOL_MAP = {
+    "BTCUSD": "BTC/USD",
+    "SOLUSD": "SOL/USD"
+}
 
 # =========================
 # HELPERS
 # =========================
-def get_kraken_balance():
+def get_balance(currency):
     balance = kraken.fetch_balance()
-    return balance["total"]["USD"]
+    return balance["total"].get(currency, 0)
 
-def get_alpaca_equity():
-    account = alpaca.get_account()
-    return float(account.equity)
-
-def get_alpaca_position_qty(symbol):
-    try:
-        pos = alpaca.get_position(symbol)
-        return float(pos.qty)
-    except:
-        return 0.0
+def get_price(pair):
+    ticker = kraken.fetch_ticker(pair)
+    return ticker["last"]
 
 # =========================
 # ROUTES
 # =========================
 @app.route("/", methods=["GET"])
 def home():
-    return "Bot is live"
+    return "Kraken bot is live"
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -64,63 +49,40 @@ def webhook():
     print(f"Incoming: {data}", flush=True)
 
     action = data.get("action")   # "buy" or "sell"
-    symbol = data.get("symbol")   # "BTCUSD", "NVDA", etc.
-    price = float(data.get("price", 0))
+    symbol = data.get("symbol")   # "BTCUSD" or "SOLUSD"
 
     try:
-        # =========================
-        # BTC → KRAKEN
-        # =========================
-        if symbol == "BTCUSD":
-            usd_balance = get_kraken_balance()
+        if symbol in SYMBOL_MAP:
+            pair = SYMBOL_MAP[symbol]
+
+            # 🔥 ALWAYS use live Kraken price
+            price = get_price(pair)
+
+            usd_balance = get_balance("USD")
             allocation_value = usd_balance * ALLOCATION
 
+            base_asset = pair.split("/")[0]  # BTC or SOL
+
+            # =========================
+            # BUY
+            # =========================
             if action == "buy":
                 qty = allocation_value / price
-                qty = float(f"{qty:.8f}")  # Kraken precision
-
-                order = kraken.create_market_buy_order(KRAKEN_SYMBOL, qty)
-                print(f"BTC BUY: {qty}", flush=True)
-
-            elif action == "sell":
-                btc_balance = kraken.fetch_balance()["total"]["BTC"]
-
-                if btc_balance > 0:
-                    order = kraken.create_market_sell_order(KRAKEN_SYMBOL, btc_balance)
-                    print(f"BTC SELL: {btc_balance}", flush=True)
-
-        # =========================
-        # STOCKS → ALPACA
-        # =========================
-        else:
-            equity = get_alpaca_equity()
-            allocation_value = equity * ALLOCATION
-
-            if action == "buy":
-                qty = int(allocation_value / price)
+                qty = float(f"{qty:.8f}")  # precision safety
 
                 if qty > 0:
-                    alpaca.submit_order(
-                        symbol=symbol,
-                        qty=qty,
-                        side="buy",
-                        type="market",
-                        time_in_force="day"
-                    )
-                    print(f"{symbol} BUY: {qty}", flush=True)
+                    kraken.create_market_buy_order(pair, qty)
+                    print(f"{base_asset} BUY: {qty} @ {price}", flush=True)
 
+            # =========================
+            # SELL
+            # =========================
             elif action == "sell":
-                qty = get_alpaca_position_qty(symbol)
+                asset_balance = get_balance(base_asset)
 
-                if qty > 0:
-                    alpaca.submit_order(
-                        symbol=symbol,
-                        qty=qty,
-                        side="sell",
-                        type="market",
-                        time_in_force="day"
-                    )
-                    print(f"{symbol} SELL: {qty}", flush=True)
+                if asset_balance > 0:
+                    kraken.create_market_sell_order(pair, asset_balance)
+                    print(f"{base_asset} SELL: {asset_balance} @ {price}", flush=True)
 
         return jsonify({"status": "success"})
 
