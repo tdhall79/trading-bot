@@ -1,2 +1,6 @@
 flask
 ccxt
+
+alpaca-trade-api
+flask
+requests
