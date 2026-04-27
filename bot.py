@@ -12,7 +12,7 @@ api = tradeapi.REST(
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    data = request.json
+    data = request.get_json(force=True)
 
     symbol = data["symbol"]
     action = data["action"]
