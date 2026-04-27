@@ -1,49 +1,61 @@
-from flask import Flask, request, jsonify
-import alpaca_trade_api as tradeapi
-import os
-
-app = Flask(__name__)
-
-api = tradeapi.REST(
-    os.getenv("APCA_API_KEY_ID"),
-    os.getenv("APCA_API_SECRET_KEY"),
-    base_url="https://paper-api.alpaca.markets"
-)
-
-@app.route('/webhook', methods=['POST'])
+ @app.route('/webhook', methods=['POST'])
 def webhook():
-    data = request.get_json(force=True)
-
-    symbol = data["symbol"]
-    action = data["action"]
-    qty = data["quantity"]
-
     try:
-        # === POSITION CHECK ===
+        # --- Robust JSON parsing (fixes 415/400 issues) ---
+        data = request.get_json(force=True, silent=True)
+
+        if not data:
+            return jsonify({"status": "error", "message": "No JSON received"}), 400
+
+        # --- Extract + sanitize fields ---
+        symbol = data.get("symbol")
+        action = data.get("action")
+
+        try:
+            qty = int(float(data.get("quantity", 0)))
+        except:
+            qty = 0
+
+        try:
+            limit_price = float(data.get("limit_price")) if data.get("limit_price") is not None else None
+        except:
+            limit_price = None
+
+        order_type = data.get("type", "limit")
+        tif = data.get("time_in_force", "day")
+        extended = data.get("extended_hours", True)
+
+        # --- Validate payload ---
+        if not symbol or not action or qty <= 0:
+            return jsonify({
+                "status": "error",
+                "message": "Invalid payload",
+                "received": data
+            }), 400
+
+        # --- Position check ---
         positions = {p.symbol: p for p in api.list_positions()}
         position = positions.get(symbol)
 
-        # Prevent duplicate buys
         if action == "buy" and position:
             return jsonify({"status": "skipped", "reason": "already in position"})
 
-        # Prevent selling nothing
         if action == "sell" and not position:
             return jsonify({"status": "skipped", "reason": "no position"})
 
-        # === SUBMIT ORDER ===
+        # --- Submit order ---
         order = api.submit_order(
             symbol=symbol,
             qty=qty,
             side=action,
-            type=data.get("type", "limit"),
-            time_in_force=data.get("time_in_force", "day"),
-            limit_price=data.get("limit_price"),
-            extended_hours=data.get("extended_hours", True)
+            type=order_type,
+            time_in_force=tif,
+            limit_price=limit_price,
+            extended_hours=extended
         )
 
         return jsonify({
-            "status": "filled",
+            "status": "success",
             "symbol": symbol,
             "side": action,
             "qty": qty,
@@ -51,9 +63,7 @@ def webhook():
         })
 
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 400
-
-
-@app.route('/')
-def home():
-    return "Alpaca webhook live"
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 400
