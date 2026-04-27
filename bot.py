@@ -1,3 +1,6 @@
+print("RAW:", request.data)
+print("JSON:", request.get_json(force=True, silent=True))
+
 from flask import Flask, request, jsonify
 import alpaca_trade_api as tradeapi
 import os
