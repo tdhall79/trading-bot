@@ -1,4 +1,4 @@
- @app.route('/webhook', methods=['POST'])
+@app.route('/webhook', methods=['POST'])
 def webhook():
     try:
         # --- Robust JSON parsing (fixes 415/400 issues) ---
