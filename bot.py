@@ -87,11 +87,11 @@ def webhook():
         })
 
     except Exception as e:
-    print("ALPACA ERROR:", str(e))   # <-- THIS LINE
-    return jsonify({
-        "status": "error",
-        "message": str(e)
-    }), 400
+        print("ALPACA ERROR:", str(e))   # <-- THIS LINE
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 400
 
 
 # === HEALTH CHECK ===
