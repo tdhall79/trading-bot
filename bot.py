@@ -7,8 +7,7 @@ app = Flask(__name__)
 # === DEBUG ENV VARS ===
 
 print("KEY:", os.getenv("APCA_API_KEY_ID"))
-
-print("SECRET:", os.getenv("APCA_API_SECRET_KEY")
+print("SECRET:", os.getenv("APCA_API_SECRET_KEY"))
 
 # === ALPACA SETUP ===
 api = tradeapi.REST(
