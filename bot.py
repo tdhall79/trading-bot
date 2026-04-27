@@ -13,7 +13,7 @@ print("SECRET:", os.getenv("APCA_API_SECRET_KEY"))
 api = tradeapi.REST(
     os.getenv("APCA_API_KEY_ID"),
     os.getenv("APCA_API_SECRET_KEY"),
-    base_url="https://paper-api.alpaca.markets"  # change to live later
+    base_url="https://api.alpaca.markets" # change to live later
 )
 
 # === WEBHOOK ===
