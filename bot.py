@@ -5,9 +5,9 @@ import os
 app = Flask(__name__)
 
 api = tradeapi.REST(
-    os.getenv("AK3OQVCSTYIEQI5NI734WJ7RJD"),
-    os.getenv("7bxUyNS56urT8WVLhMPFzTnZxfTKu2opYSYyFPimpWXA"),
-    base_url="https://paper-api.alpaca.markets"  # change to live later
+    os.getenv("APCA_API_KEY_ID"),
+    os.getenv("APCA_API_SECRET_KEY"),
+    base_url="https://paper-api.alpaca.markets"
 )
 
 @app.route('/webhook', methods=['POST'])
