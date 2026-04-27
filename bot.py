@@ -1,3 +1,25 @@
+from flask import Flask, request, jsonify
+
+import alpaca_trade_api as tradeapi
+
+import os
+
+# ✅ CREATE APP FIRST
+
+app = Flask(__name__)
+
+# ✅ THEN SETUP ALPACA
+
+api = tradeapi.REST(
+
+    os.getenv("APCA_API_KEY_ID"),
+
+    os.getenv("APCA_API_SECRET_KEY"),
+
+    base_url="https://paper-api.alpaca.markets"
+
+)
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
     try:
