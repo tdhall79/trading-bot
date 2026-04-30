@@ -18,37 +18,30 @@ def get_position(symbol):
         return None
 
 
-def close_position(symbol):
-    try:
-        pos = api.get_position(symbol)
-        api.submit_order(
-            symbol=symbol,
-            qty=pos.qty,
-            side="sell",
-            type="market",
-            time_in_force="gtc"
-        )
-    except:
-        pass
-
-
-def open_position(symbol, risk=0.1):
-    account = api.get_account()
-    equity = float(account.equity)
-
-    price = float(api.get_latest_trade(symbol).price)
-    qty = (equity * risk) / price
-
+def open_position(symbol, qty, limit_price):
     api.submit_order(
         symbol=symbol,
-        qty=round(qty, 6),
+        qty=qty,
         side="buy",
-        type="market",
-        time_in_force="gtc"
+        type="limit",
+        time_in_force="day",
+        limit_price=round(limit_price, 2),
+        extended_hours=True
     )
 
 
-@app.route('/webhook', methods=['POST'])
+def close_position(symbol, qty):
+    api.submit_order(
+        symbol=symbol,
+        qty=qty,
+        side="sell",
+        type="limit",
+        time_in_force="day",
+        extended_hours=True
+    )
+
+
+@app.route("/webhook", methods=["POST"])
 def webhook():
     try:
         data = request.get_json(force=True)
@@ -57,38 +50,56 @@ def webhook():
 
         symbol = data.get("symbol")
         signal = (data.get("signal") or "").upper()
-        risk = float(data.get("risk", 0.1))
+        qty = float(data.get("qty", 0))
+        offset = float(data.get("limit_offset", 0.01))
 
-        if not symbol or not signal:
-            return jsonify({"error": "missing fields"}), 400
+        if not symbol or not signal or qty <= 0:
+            return jsonify({"error": "invalid payload"}), 400
 
+        price = float(api.get_latest_trade(symbol).price)
         position = get_position(symbol)
         is_long = position is not None
 
-        # BUY = ignore (intent only)
-        if signal == "BUY":
-            return jsonify({"status": "ignored"}), 200
-
-        # LONG = entry
+        # =====================
+        # LONG ENTRY
+        # =====================
         if signal == "LONG":
             if not is_long:
-                open_position(symbol, risk)
-            return jsonify({"status": "long_executed"}), 200
+                limit_price = price * (1 - offset)
 
-        # SELL = exit
-        if signal == "SELL":
+                open_position(symbol, qty, limit_price)
+
+                return jsonify({
+                    "status": "long_opened",
+                    "symbol": symbol,
+                    "qty": qty
+                })
+
+            return jsonify({"status": "already_long"}), 200
+
+        # =====================
+        # EXIT LONG
+        # =====================
+        if signal == "EXIT LONG":
             if is_long:
-                close_position(symbol)
-            return jsonify({"status": "closed"}), 200
+                close_position(symbol, qty)
 
-        return jsonify({"status": "no_action"}), 200
+                return jsonify({
+                    "status": "long_closed",
+                    "symbol": symbol,
+                    "qty": qty
+                })
+
+            return jsonify({"status": "no_position"}), 200
+
+        return jsonify({"status": "ignored_signal"}), 200
 
     except Exception as e:
         print("ERROR:", str(e), flush=True)
         return jsonify({"error": str(e)}), 500
 
 
-@app.route('/')
+@app.route("/")
 def home():
     return "Bot running"
 
