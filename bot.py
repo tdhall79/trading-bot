@@ -4,15 +4,11 @@ import os
 
 app = Flask(__name__)
 
-# === DEBUG ENV VARS ===
-
-
-
 # === ALPACA SETUP ===
 api = tradeapi.REST(
     os.getenv("APCA_API_KEY_ID"),
     os.getenv("APCA_API_SECRET_KEY"),
-    base_url="https://api.alpaca.markets" # change to live later
+    base_url="https://api.alpaca.markets"  # change to live later
 )
 
 # === WEBHOOK ===
@@ -29,7 +25,7 @@ def webhook():
             return jsonify({"status": "error", "message": "Invalid JSON"}), 400
 
         # --- EXTRACT FIELDS ---
-        symbol = data.get("symbol")
+        symbol = data.get("ticker") or data.get("symbol")
         action = data.get("action")
 
         try:
@@ -37,22 +33,25 @@ def webhook():
         except:
             qty = 0
 
-        try:
-            limit_price = float(data.get("limit_price"))
-        except:
-            return jsonify({"status": "error", "message": "Invalid limit_price", "data": data}), 400
-
         order_type = data.get("type", "limit")
         tif = data.get("time_in_force", "day")
         extended = data.get("extended_hours", True)
 
         # --- VALIDATION ---
-        if not symbol or not action or qty <= 0:
+        if not symbol or not action or qty <= 0 or "{" in symbol:
             return jsonify({
                 "status": "error",
-                "message": "Missing required fields",
+                "message": "Missing or invalid fields",
                 "data": data
             }), 400
+
+        # --- PRICE LOGIC ---
+        price_factor = float(data.get("price_factor", 1.0))
+
+        last_trade = api.get_latest_trade(symbol)
+        market_price = float(last_trade.price)
+
+        limit_price = market_price * price_factor
 
         # === APPLY EXTENDED HOURS BUFFER ===
         if action == "buy":
@@ -91,7 +90,7 @@ def webhook():
         })
 
     except Exception as e:
-        print("ALPACA ERROR:", str(e))   # <-- THIS LINE
+        print("ALPACA ERROR:", str(e))
         return jsonify({
             "status": "error",
             "message": str(e)
