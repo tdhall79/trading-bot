@@ -11,13 +11,14 @@ api = tradeapi.REST(
     base_url="https://api.alpaca.markets"
 )
 
-# ===== CONFIG =====
-COOLDOWN_SECONDS = 5
-RETRY_DELAY = 3  # seconds before checking fill
-MAX_RETRY = 1
-
+# Track last signal (flip protection)
 last_signal = {}
+COOLDOWN = 3
 
+
+# =========================
+# HELPERS
+# =========================
 
 def get_position(symbol):
     try:
@@ -26,21 +27,30 @@ def get_position(symbol):
         return None
 
 
-def is_long(symbol):
-    return get_position(symbol) is not None
+def get_open_order(symbol):
+    orders = api.list_orders(status="open", symbols=[symbol])
+    return orders[0] if orders else None
 
 
-def get_prices(symbol):
-    quote = api.get_latest_quote(symbol)
-    ask = float(quote.ap)
-    bid = float(quote.bp)
-    mid = (ask + bid) / 2
-    spread = ask - bid
-    spread_pct = spread / mid if mid > 0 else 0
-    return ask, bid, spread_pct
+def wait_for_cancel(order_id):
+    for _ in range(10):
+        time.sleep(0.5)
+        o = api.get_order(order_id)
+        if o.status in ["canceled", "expired", "rejected"]:
+            return True
+    return False
 
 
-def place_limit(symbol, qty, side, price):
+def replace_order(symbol, qty, side, price):
+    existing = get_open_order(symbol)
+
+    if existing:
+        api.cancel_order(existing.id)
+
+        if not wait_for_cancel(existing.id):
+            print("Cancel failed, skipping replace", flush=True)
+            return None
+
     return api.submit_order(
         symbol=symbol,
         qty=qty,
@@ -52,22 +62,19 @@ def place_limit(symbol, qty, side, price):
     )
 
 
-def wait_and_retry(order_id, symbol, qty, side, aggressive_price):
-    time.sleep(RETRY_DELAY)
+def get_prices(symbol):
+    q = api.get_latest_quote(symbol)
+    ask = float(q.ap)
+    bid = float(q.bp)
+    mid = (ask + bid) / 2
+    spread = ask - bid
+    spread_pct = spread / mid if mid > 0 else 0
+    return ask, bid, spread_pct
 
-    order = api.get_order(order_id)
 
-    if order.status != "filled":
-        print("Retrying with aggressive price...", flush=True)
-
-        # cancel old
-        api.cancel_order(order_id)
-
-        # resend more aggressive
-        return place_limit(symbol, qty, side, aggressive_price)
-
-    return order
-
+# =========================
+# WEBHOOK
+# =========================
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -87,59 +94,58 @@ def webhook():
         now = time.time()
         last = last_signal.get(symbol)
 
-        if last:
-            if (now - last["time"] < COOLDOWN_SECONDS) and (last["signal"] != signal):
-                return jsonify({"status": "flip_blocked"}), 200
+        if last and (now - last["time"] < COOLDOWN) and (last["signal"] != signal):
+            return jsonify({"status": "flip_blocked"}), 200
 
         last_signal[symbol] = {"signal": signal, "time": now}
 
+        # ===== MARKET DATA =====
         ask, bid, spread_pct = get_prices(symbol)
 
-        long_state = is_long(symbol)
+        # ===== POSITION STATE =====
+        position = get_position(symbol)
+        is_long = position is not None
 
-        # ===== LONG ENTRY =====
+        # =====================
+        # LONG ENTRY
+        # =====================
         if signal == "LONG":
-            if long_state:
+
+            if is_long:
                 return jsonify({"status": "already_long"}), 200
 
-            # adaptive pricing
-            if spread_pct > 0.005:  # illiquid
-                limit_price = ask * 1.02
-                aggressive_price = ask * 1.04
+            # adaptive aggressiveness
+            if spread_pct > 0.005:
+                price = ask * 1.02
             else:
-                limit_price = ask * 1.001
-                aggressive_price = ask * 1.005
+                price = ask * 1.001
 
-            order = place_limit(symbol, qty, "buy", limit_price)
-
-            # retry if needed
-            order = wait_and_retry(order.id, symbol, qty, "buy", aggressive_price)
+            order = replace_order(symbol, qty, "buy", price)
 
             return jsonify({
-                "status": "long_order_sent",
-                "limit_price": limit_price,
+                "status": "long_order_active",
+                "price": price,
                 "spread_pct": spread_pct
             })
 
-        # ===== EXIT LONG =====
+        # =====================
+        # EXIT LONG
+        # =====================
         if signal == "EXIT LONG":
-            if not long_state:
+
+            if not is_long:
                 return jsonify({"status": "no_position"}), 200
 
             if spread_pct > 0.005:
-                limit_price = bid * 0.98
-                aggressive_price = bid * 0.96
+                price = bid * 0.98
             else:
-                limit_price = bid * 0.999
-                aggressive_price = bid * 0.995
+                price = bid * 0.999
 
-            order = place_limit(symbol, qty, "sell", limit_price)
-
-            order = wait_and_retry(order.id, symbol, qty, "sell", aggressive_price)
+            order = replace_order(symbol, qty, "sell", price)
 
             return jsonify({
-                "status": "exit_order_sent",
-                "limit_price": limit_price,
+                "status": "exit_order_active",
+                "price": price,
                 "spread_pct": spread_pct
             })
 
