@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 import alpaca_trade_api as tradeapi
 import os
+import time
 
 app = Flask(__name__)
 
@@ -10,12 +11,21 @@ api = tradeapi.REST(
     base_url="https://api.alpaca.markets"
 )
 
+# === FLIP PROTECTION MEMORY ===
+last_signal = {}  # {symbol: {"signal": str, "time": float}}
+
+COOLDOWN_SECONDS = 5
+
 
 def get_position(symbol):
     try:
         return api.get_position(symbol)
     except:
         return None
+
+
+def is_long(symbol):
+    return get_position(symbol) is not None
 
 
 @app.route("/webhook", methods=["POST"])
@@ -28,12 +38,33 @@ def webhook():
         symbol = data.get("symbol")
         signal = (data.get("signal") or "").upper()
         qty = float(data.get("qty", 0))
-        offset = float(data.get("limit_offset", 0.005))  # smaller default = better fills
+        offset = float(data.get("limit_offset", 0.005))
 
         if not symbol or not signal or qty <= 0:
             return jsonify({"error": "invalid payload"}), 400
 
-        # === GET REAL EXECUTION PRICES (bid/ask) ===
+        # =========================
+        # FLIP / DUPLICATE FILTER
+        # =========================
+        now = time.time()
+        last = last_signal.get(symbol)
+
+        if last:
+            same_time_window = (now - last["time"]) < COOLDOWN_SECONDS
+            opposite_signal = last["signal"] != signal
+
+            if same_time_window and opposite_signal:
+                return jsonify({
+                    "status": "ignored_flip_protection",
+                    "symbol": symbol,
+                    "signal": signal
+                }), 200
+
+        last_signal[symbol] = {"signal": signal, "time": now}
+
+        # =========================
+        # GET MARKET DATA (bid/ask)
+        # =========================
         quote = api.get_latest_quote(symbol)
 
         ask = float(quote.ap) if quote.ap else None
@@ -42,16 +73,14 @@ def webhook():
         if not ask or not bid:
             return jsonify({"error": "no quote data"}), 400
 
-        position = get_position(symbol)
-        is_long = position is not None
+        long_state = is_long(symbol)
 
-        # =====================
+        # =========================
         # LONG ENTRY
-        # =====================
+        # =========================
         if signal == "LONG":
-            if not is_long:
+            if not long_state:
 
-                # slightly aggressive buy: near ask or slightly above
                 limit_price = ask * (1 + offset)
 
                 api.submit_order(
@@ -73,13 +102,12 @@ def webhook():
 
             return jsonify({"status": "already_long"}), 200
 
-        # =====================
+        # =========================
         # EXIT LONG
-        # =====================
+        # =========================
         if signal == "EXIT LONG":
-            if is_long:
+            if long_state:
 
-                # slightly aggressive sell: near bid or slightly below
                 limit_price = bid * (1 - offset)
 
                 api.submit_order(
