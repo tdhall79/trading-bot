@@ -3,101 +3,96 @@ import alpaca_trade_api as tradeapi
 import os
 
 app = Flask(__name__)
-print("WEBHOOK HIT:", request.data, flush=True)
-# === ALPACA SETUP ===
+
 api = tradeapi.REST(
     os.getenv("APCA_API_KEY_ID"),
     os.getenv("APCA_API_SECRET_KEY"),
-    base_url="https://api.alpaca.markets"  # change to live later
+    base_url="https://api.alpaca.markets"
 )
 
-# === WEBHOOK ===
+
+def get_position(symbol):
+    try:
+        return api.get_position(symbol)
+    except:
+        return None
+
+
+def close_position(symbol):
+    try:
+        pos = api.get_position(symbol)
+        api.submit_order(
+            symbol=symbol,
+            qty=pos.qty,
+            side="sell",
+            type="market",
+            time_in_force="gtc"
+        )
+    except:
+        pass
+
+
+def open_position(symbol, risk=0.1):
+    account = api.get_account()
+    equity = float(account.equity)
+
+    price = float(api.get_latest_trade(symbol).price)
+    qty = (equity * risk) / price
+
+    api.submit_order(
+        symbol=symbol,
+        qty=round(qty, 6),
+        side="buy",
+        type="market",
+        time_in_force="gtc"
+    )
+
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
     try:
-        # --- DEBUG ---
-        print("RAW:", request.data)
+        data = request.get_json(force=True)
 
-        data = request.get_json(force=True, silent=True)
-        print("PARSED:", data)
+        print("WEBHOOK RECEIVED:", data, flush=True)
 
-        if not data:
-            return jsonify({"status": "error", "message": "Invalid JSON"}), 400
+        symbol = data.get("symbol")
+        signal = (data.get("signal") or "").upper()
+        risk = float(data.get("risk", 0.1))
 
-        # --- EXTRACT FIELDS ---
-        symbol = data.get("ticker") or data.get("symbol")
-        action = data.get("action")
+        if not symbol or not signal:
+            return jsonify({"error": "missing fields"}), 400
 
-        try:
-            qty = int(float(data.get("quantity", 0)))
-        except:
-            qty = 0
+        position = get_position(symbol)
+        is_long = position is not None
 
-        order_type = data.get("type", "limit")
-        tif = data.get("time_in_force", "day")
-        extended = data.get("extended_hours", True)
+        # BUY = ignore (intent only)
+        if signal == "BUY":
+            return jsonify({"status": "ignored"}), 200
 
-        # --- VALIDATION ---
-        if not symbol or not action or qty <= 0 or "{" in symbol:
-            return jsonify({
-                "status": "error",
-                "message": "Missing or invalid fields",
-                "data": data
-            }), 400
+        # LONG = entry
+        if signal == "LONG":
+            if not is_long:
+                open_position(symbol, risk)
+            return jsonify({"status": "long_executed"}), 200
 
-        # --- PRICE LOGIC ---
-        price_factor = float(data.get("price_factor", 1.0))
+        # SELL = exit
+        if signal == "SELL":
+            if is_long:
+                close_position(symbol)
+            return jsonify({"status": "closed"}), 200
 
-        last_trade = api.get_latest_trade(symbol)
-        market_price = float(last_trade.price)
-
-        limit_price = market_price * price_factor
-
-        # === APPLY EXTENDED HOURS BUFFER ===
-        if action == "buy":
-            limit_price *= 1.008   # +0.8%
-        elif action == "sell":
-            limit_price *= 0.992   # -0.8%
-
-        # --- POSITION CHECK ---
-        positions = {p.symbol: p for p in api.list_positions()}
-        position = positions.get(symbol)
-
-        if action == "buy" and position:
-            return jsonify({"status": "skipped", "reason": "already in position"})
-
-        if action == "sell" and not position:
-            return jsonify({"status": "skipped", "reason": "no position"})
-
-        # --- SUBMIT ORDER ---
-        order = api.submit_order(
-            symbol=symbol,
-            qty=qty,
-            side=action,
-            type=order_type,
-            time_in_force=tif,
-            limit_price=round(limit_price, 2),
-            extended_hours=extended
-        )
-
-        return jsonify({
-            "status": "success",
-            "symbol": symbol,
-            "side": action,
-            "qty": qty,
-            "limit_price": limit_price,
-            "order_id": order.id
-        })
+        return jsonify({"status": "no_action"}), 200
 
     except Exception as e:
-        print("ALPACA ERROR:", str(e))
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 400
+        print("ERROR:", str(e), flush=True)
+        return jsonify({"error": str(e)}), 500
 
 
-# === HEALTH CHECK ===
 @app.route('/')
 def home():
-    return "Alpaca bot running"
+    return "Bot running"
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
