@@ -3,7 +3,7 @@ import alpaca_trade_api as tradeapi
 import os
 
 app = Flask(__name__)
-
+print("WEBHOOK HIT:", request.data, flush=True)
 # === ALPACA SETUP ===
 api = tradeapi.REST(
     os.getenv("APCA_API_KEY_ID"),
