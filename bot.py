@@ -85,7 +85,7 @@ def webhook():
             }
 
         state = STATE[symbol]
-
+        print("STATE DEBUG:", state, flush=True)
         # -----------------------------
         # FILTERS
         # -----------------------------
