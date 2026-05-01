@@ -5,7 +5,7 @@ import time
 import hashlib
 
 # =====================================================
-# APP (MUST BE FIRST BEFORE ANY ROUTES)
+# APP
 # =====================================================
 app = Flask(__name__)
 
@@ -23,9 +23,6 @@ api = tradeapi.REST(
 # =====================================================
 MAX_AGE = 300
 COOLDOWN = 30
-MIN_FLIP_GAP = 2
-USE_MARKET_ORDERS = True
-
 STATE = {}
 
 # =====================================================
@@ -33,21 +30,6 @@ STATE = {}
 # =====================================================
 def now():
     return time.time()
-
-def get_position(symbol):
-    try:
-        return api.get_position(symbol)
-    except:
-        return None
-
-def get_open_order(symbol):
-    orders = api.list_orders(status="open", symbols=[symbol])
-    return orders[0] if orders else None
-
-def cancel_open_order(symbol):
-    order = get_open_order(symbol)
-    if order:
-        api.cancel_order(order.id)
 
 def get_prices(symbol):
     q = api.get_latest_quote(symbol)
@@ -87,14 +69,8 @@ def webhook():
         if signal not in ["LONG", "EXIT LONG"]:
             return jsonify({"error": "invalid signal"}), 400
 
-        if not symbol:
-            return jsonify({"error": "missing symbol"}), 400
-
-        if qty <= 0:
-            return jsonify({"error": "invalid qty"}), 400
-
-        if not event_time:
-            return jsonify({"error": "missing time"}), 400
+        if not symbol or qty <= 0 or not event_time:
+            return jsonify({"error": "invalid input"}), 400
 
         # -----------------------------
         # STATE INIT
@@ -104,7 +80,8 @@ def webhook():
                 "last_event_time": 0,
                 "last_signal": None,
                 "last_trade_time": 0,
-                "last_event_id": None
+                "last_event_id": None,
+                "in_position": False
             }
 
         state = STATE[symbol]
@@ -122,21 +99,10 @@ def webhook():
         if event_id == state["last_event_id"]:
             return jsonify({"status": "duplicate"}), 200
 
-        # flip protection (critical fix for AlgoPro noise)
-        time_diff = (event_time - state["last_event_time"]) / 1000
-        if (
-            state["last_signal"] is not None and
-            signal != state["last_signal"] and
-            time_diff < MIN_FLIP_GAP
-        ):
-            print("FLIP IGNORED:", state["last_signal"], "->", signal, flush=True)
-            return jsonify({"status": "flip_ignored"}), 200
-
-        # cooldown
         if now() - state["last_trade_time"] < COOLDOWN:
             return jsonify({"status": "cooldown"}), 200
 
-        # update state
+        # update state tracking
         state["last_event_time"] = event_time
         state["last_event_id"] = event_id
         state["last_signal"] = signal
@@ -145,12 +111,11 @@ def webhook():
         # MARKET DATA
         # -----------------------------
         ask, bid, spread = get_prices(symbol)
-        position = get_position(symbol)
-        is_long = position is not None
 
-        print("IS LONG:", is_long, flush=True)
-        print("POSITION RAW:", position, flush=True)
-        print(f"{symbol} | {signal} | position={is_long}", flush=True)
+        # 🔥 USE INTERNAL STATE ONLY (IMPORTANT FIX)
+        is_long = state["in_position"]
+
+        print(f"{symbol} | {signal} | in_position={is_long}", flush=True)
 
         # =====================================================
         # LONG ENTRY
@@ -160,28 +125,19 @@ def webhook():
             if is_long:
                 return jsonify({"status": "already_in_position"}), 200
 
-            cancel_open_order(symbol)
+            order = api.submit_order(
+                symbol=symbol,
+                qty=qty,
+                side="buy",
+                type="market",
+                time_in_force="day"
+            )
 
-            if USE_MARKET_ORDERS:
-                api.submit_order(
-                    symbol=symbol,
-                    qty=qty,
-                    side="buy",
-                    type="market",
-                    time_in_force="day"
-                )
-            else:
-                price = ask * 1.001
-                api.submit_order(
-                    symbol=symbol,
-                    qty=qty,
-                    side="buy",
-                    type="limit",
-                    time_in_force="day",
-                    limit_price=round(price, 2)
-                )
+            print("ALPACA ORDER SENT:", order, flush=True)
 
+            state["in_position"] = True
             state["last_trade_time"] = now()
+
             return jsonify({"status": "LONG executed"})
 
         # =====================================================
@@ -192,30 +148,21 @@ def webhook():
             if not is_long:
                 return jsonify({"status": "no_position"}), 200
 
-            cancel_open_order(symbol)
+            qty_to_sell = abs(state.get("qty", qty))
 
-            qty_to_sell = abs(float(position.qty))
+            order = api.submit_order(
+                symbol=symbol,
+                qty=qty_to_sell,
+                side="sell",
+                type="market",
+                time_in_force="day"
+            )
 
-            if USE_MARKET_ORDERS:
-                api.submit_order(
-                    symbol=symbol,
-                    qty=qty_to_sell,
-                    side="sell",
-                    type="market",
-                    time_in_force="day"
-                )
-            else:
-                price = bid * 0.999
-                api.submit_order(
-                    symbol=symbol,
-                    qty=qty_to_sell,
-                    side="sell",
-                    type="limit",
-                    time_in_force="day",
-                    limit_price=round(price, 2)
-                )
+            print("ALPACA EXIT SENT:", order, flush=True)
 
+            state["in_position"] = False
             state["last_trade_time"] = now()
+
             return jsonify({"status": "EXIT executed"})
 
     except Exception as e:
@@ -229,14 +176,13 @@ def webhook():
 def home():
     return "Bot running"
 
+@app.route("/ping")
+def ping():
+    return "PING OK"
+
 # =====================================================
 # ENTRY POINT
 # =====================================================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-
-@app.route("/ping")
-def ping():
-    return "PING OK"
-    
