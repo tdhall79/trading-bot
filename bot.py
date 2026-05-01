@@ -148,6 +148,7 @@ def webhook():
         position = get_position(symbol)
         is_long = position is not None
 
+        print("POSITION RAW:", position, flush=True)
         print(f"{symbol} | {signal} | position={is_long}", flush=True)
 
         # =====================================================
