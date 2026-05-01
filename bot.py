@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 import alpaca_trade_api as tradeapi
 import os
 import time
+import hashlib
 
 app = Flask(__name__)
 
@@ -11,14 +12,18 @@ api = tradeapi.REST(
     base_url="https://api.alpaca.markets"
 )
 
-# Track last signal (flip protection)
-last_signal = {}
-COOLDOWN = 3
-
+# =========================
+# CONFIG
+# =========================
+MAX_AGE = 300  # seconds
+STATE = {}     # per-symbol state
 
 # =========================
 # HELPERS
 # =========================
+
+def now():
+    return time.time()
 
 def get_position(symbol):
     try:
@@ -26,41 +31,14 @@ def get_position(symbol):
     except:
         return None
 
-
 def get_open_order(symbol):
     orders = api.list_orders(status="open", symbols=[symbol])
     return orders[0] if orders else None
 
-
-def wait_for_cancel(order_id):
-    for _ in range(10):
-        time.sleep(0.5)
-        o = api.get_order(order_id)
-        if o.status in ["canceled", "expired", "rejected"]:
-            return True
-    return False
-
-
-def replace_order(symbol, qty, side, price):
+def cancel_open_order(symbol):
     existing = get_open_order(symbol)
-
     if existing:
         api.cancel_order(existing.id)
-
-        if not wait_for_cancel(existing.id):
-            print("Cancel failed, skipping replace", flush=True)
-            return None
-
-    return api.submit_order(
-        symbol=symbol,
-        qty=qty,
-        side=side,
-        type="limit",
-        time_in_force="day",
-        limit_price=round(price, 2),
-        extended_hours=True
-    )
-
 
 def get_prices(symbol):
     q = api.get_latest_quote(symbol)
@@ -71,6 +49,14 @@ def get_prices(symbol):
     spread_pct = spread / mid if mid > 0 else 0
     return ask, bid, spread_pct
 
+def make_event_id(data):
+    if data.get("event_id"):
+        return data["event_id"]
+    raw = f"{data.get('symbol')}|{data.get('signal')}|{data.get('time')}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+def is_stale(event_time):
+    return (now() - event_time / 1000) > MAX_AGE
 
 # =========================
 # WEBHOOK
@@ -80,76 +66,125 @@ def get_prices(symbol):
 def webhook():
     try:
         data = request.get_json(force=True)
-
         print("WEBHOOK:", data, flush=True)
 
         symbol = data.get("symbol")
         signal = (data.get("signal") or "").upper()
         qty = float(data.get("qty", 0))
+        offset = float(data.get("limit_offset", 0.01))
+        event_time = data.get("time")
 
-        if not symbol or not signal or qty <= 0:
-            return jsonify({"error": "invalid payload"}), 400
+        if not symbol or signal not in ["LONG", "EXIT LONG"]:
+            return jsonify({"error": "invalid signal"}), 400
 
-        # ===== FLIP PROTECTION =====
-        now = time.time()
-        last = last_signal.get(symbol)
+        if not event_time:
+            return jsonify({"error": "missing time"}), 400
 
-        if last and (now - last["time"] < COOLDOWN) and (last["signal"] != signal):
-            return jsonify({"status": "flip_blocked"}), 200
+        # =========================
+        # STATE INIT
+        # =========================
+        if symbol not in STATE:
+            STATE[symbol] = {
+                "last_event_time": 0,
+                "last_event_id": None
+            }
 
-        last_signal[symbol] = {"signal": signal, "time": now}
+        state = STATE[symbol]
 
-        # ===== MARKET DATA =====
+        # =========================
+        # STALE FILTER
+        # =========================
+        if is_stale(event_time):
+            return jsonify({"status": "stale_ignored"}), 200
+
+        # =========================
+        # ORDERING
+        # =========================
+        if event_time < state["last_event_time"]:
+            return jsonify({"status": "out_of_order_ignored"}), 200
+
+        # =========================
+        # DEDUP
+        # =========================
+        event_id = make_event_id(data)
+
+        if event_id == state["last_event_id"]:
+            return jsonify({"status": "duplicate_ignored"}), 200
+
+        state["last_event_time"] = event_time
+        state["last_event_id"] = event_id
+
+        # =========================
+        # MARKET + POSITION
+        # =========================
         ask, bid, spread_pct = get_prices(symbol)
-
-        # ===== POSITION STATE =====
         position = get_position(symbol)
         is_long = position is not None
 
-        # =====================
+        print(f"{symbol} | {signal} | pos={is_long} | spread={spread_pct:.4f}", flush=True)
+
+        # =========================
         # LONG ENTRY
-        # =====================
+        # =========================
         if signal == "LONG":
 
             if is_long:
                 return jsonify({"status": "already_long"}), 200
 
-            # adaptive aggressiveness
-            if spread_pct > 0.005:
-                price = ask * 1.02
-            else:
-                price = ask * 1.001
+            cancel_open_order(symbol)
 
-            order = replace_order(symbol, qty, "buy", price)
+            # adaptive price
+            if spread_pct > 0.005:
+                price = ask * (1 + offset * 2)
+            else:
+                price = ask * (1 + offset)
+
+            api.submit_order(
+                symbol=symbol,
+                qty=qty,
+                side="buy",
+                type="limit",
+                time_in_force="day",
+                limit_price=round(price, 2),
+                extended_hours=True
+            )
 
             return jsonify({
-                "status": "long_order_active",
-                "price": price,
-                "spread_pct": spread_pct
+                "status": "long_order_sent",
+                "price": price
             })
 
-        # =====================
+        # =========================
         # EXIT LONG
-        # =====================
+        # =========================
         if signal == "EXIT LONG":
 
             if not is_long:
                 return jsonify({"status": "no_position"}), 200
 
-            if spread_pct > 0.005:
-                price = bid * 0.98
-            else:
-                price = bid * 0.999
+            cancel_open_order(symbol)
 
-            order = replace_order(symbol, qty, "sell", price)
+            actual_qty = abs(float(position.qty))
+
+            if spread_pct > 0.005:
+                price = bid * (1 - offset * 2)
+            else:
+                price = bid * (1 - offset)
+
+            api.submit_order(
+                symbol=symbol,
+                qty=actual_qty,
+                side="sell",
+                type="limit",
+                time_in_force="day",
+                limit_price=round(price, 2),
+                extended_hours=True
+            )
 
             return jsonify({
-                "status": "exit_order_active",
-                "price": price,
-                "spread_pct": spread_pct
+                "status": "exit_order_sent",
+                "price": price
             })
-
-        return jsonify({"status": "ignored"}), 200
 
     except Exception as e:
         print("ERROR:", str(e), flush=True)
