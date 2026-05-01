@@ -1,9 +1,71 @@
+from flask import Flask, request, jsonify
+import alpaca_trade_api as tradeapi
+import os
+import time
+import hashlib
+
 # =========================
-# CONFIG (NEW)
+# CREATE APP (MUST BE FIRST)
 # =========================
-COOLDOWN = 30            # seconds between trades per symbol
-MIN_SIGNAL_GAP = 2       # seconds required between opposite signals
-USE_MARKET_ORDERS = True  # set False after testing
+app = Flask(__name__)
+
+# =========================
+# ALPACA SETUP
+# =========================
+api = tradeapi.REST(
+    os.getenv("APCA_API_KEY_ID"),
+    os.getenv("APCA_API_SECRET_KEY"),
+    base_url="https://api.alpaca.markets"
+)
+
+# =========================
+# CONFIG
+# =========================
+MAX_AGE = 300          # seconds (ignore stale alerts)
+COOLDOWN = 30          # seconds between trades
+MIN_SIGNAL_GAP = 2     # seconds to ignore flip signals
+USE_MARKET_ORDERS = True  # switch to False later
+
+STATE = {}
+
+# =========================
+# HELPERS
+# =========================
+def now():
+    return time.time()
+
+def get_position(symbol):
+    try:
+        return api.get_position(symbol)
+    except:
+        return None
+
+def get_open_order(symbol):
+    orders = api.list_orders(status="open", symbols=[symbol])
+    return orders[0] if orders else None
+
+def cancel_open_order(symbol):
+    existing = get_open_order(symbol)
+    if existing:
+        api.cancel_order(existing.id)
+
+def get_prices(symbol):
+    q = api.get_latest_quote(symbol)
+    ask = float(q.ap)
+    bid = float(q.bp)
+    mid = (ask + bid) / 2
+    spread = ask - bid
+    spread_pct = spread / mid if mid > 0 else 0
+    return ask, bid, spread_pct
+
+def make_event_id(data):
+    if data.get("event_id"):
+        return data["event_id"]
+    raw = f"{data.get('symbol')}|{data.get('signal')}|{data.get('time')}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+def is_stale(event_time):
+    return (now() - event_time / 1000) > MAX_AGE
 
 # =========================
 # WEBHOOK
@@ -14,9 +76,7 @@ def webhook():
         data = request.get_json(force=True)
         print("WEBHOOK:", data, flush=True)
 
-        # =========================
-        # CLEAN INPUT (CRITICAL)
-        # =========================
+        # ===== CLEAN INPUT =====
         symbol = data.get("symbol", "").strip().upper()
         signal = (data.get("signal") or "").strip().upper()
         qty = float(data.get("qty", 0))
@@ -32,9 +92,7 @@ def webhook():
         if not event_time:
             return jsonify({"error": "missing time"}), 400
 
-        # =========================
-        # STATE INIT
-        # =========================
+        # ===== STATE INIT =====
         if symbol not in STATE:
             STATE[symbol] = {
                 "last_event_time": 0,
@@ -45,28 +103,20 @@ def webhook():
 
         state = STATE[symbol]
 
-        # =========================
-        # STALE FILTER
-        # =========================
+        # ===== STALE FILTER =====
         if is_stale(event_time):
             return jsonify({"status": "stale_ignored"}), 200
 
-        # =========================
-        # ORDERING
-        # =========================
+        # ===== ORDERING =====
         if event_time < state["last_event_time"]:
             return jsonify({"status": "out_of_order_ignored"}), 200
 
-        # =========================
-        # DEDUP
-        # =========================
+        # ===== DEDUP =====
         event_id = make_event_id(data)
         if event_id == state["last_event_id"]:
             return jsonify({"status": "duplicate_ignored"}), 200
 
-        # =========================
-        # CONFLICT FILTER (KEY FIX)
-        # =========================
+        # ===== FLIP FILTER (CRITICAL) =====
         time_diff = (event_time - state["last_event_time"]) / 1000
 
         if (
@@ -77,9 +127,7 @@ def webhook():
             print(f"IGNORED FLIP: {state['last_signal']} -> {signal}", flush=True)
             return jsonify({"status": "flip_ignored"}), 200
 
-        # =========================
-        # COOLDOWN (ANTI-CHURN)
-        # =========================
+        # ===== COOLDOWN =====
         if now() - state["last_trade_time"] < COOLDOWN:
             return jsonify({"status": "cooldown_active"}), 200
 
@@ -88,9 +136,7 @@ def webhook():
         state["last_event_id"] = event_id
         state["last_signal"] = signal
 
-        # =========================
-        # MARKET DATA
-        # =========================
+        # ===== MARKET DATA =====
         ask, bid, spread_pct = get_prices(symbol)
         position = get_position(symbol)
         is_long = position is not None
@@ -129,7 +175,6 @@ def webhook():
                     )
 
                 state["last_trade_time"] = now()
-
                 return jsonify({"status": "long_executed"})
 
             except Exception as e:
@@ -170,7 +215,6 @@ def webhook():
                     )
 
                 state["last_trade_time"] = now()
-
                 return jsonify({"status": "exit_executed"})
 
             except Exception as e:
@@ -180,3 +224,17 @@ def webhook():
     except Exception as e:
         print("ERROR:", str(e), flush=True)
         return jsonify({"error": str(e)}), 500
+
+# =========================
+# HEALTH CHECK
+# =========================
+@app.route("/")
+def home():
+    return "Bot running"
+
+# =========================
+# RUN (LOCAL ONLY)
+# =========================
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
