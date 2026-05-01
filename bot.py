@@ -2,187 +2,209 @@ from flask import Flask, request, jsonify
 import alpaca_trade_api as tradeapi
 import os
 import time
+import json
 import hashlib
 
-# =====================================================
-# APP
-# =====================================================
 app = Flask(__name__)
 
-# =====================================================
-# ALPACA
-# =====================================================
 api = tradeapi.REST(
     os.getenv("APCA_API_KEY_ID"),
     os.getenv("APCA_API_SECRET_KEY"),
     base_url="https://api.alpaca.markets"
 )
 
-# =====================================================
+# =========================
 # CONFIG
-# =====================================================
-MAX_AGE = 300
-COOLDOWN = 30
-STATE = {}
+# =========================
+STATE_FILE = "state.json"
+MAX_AGE = 900  # 15 min (safe default)
+WARMUP = 5     # seconds after restart
 
-# =====================================================
+START_TIME = time.time()
+
+# =========================
+# STATE (persistent)
+# =========================
+def load_state():
+    try:
+        with open(STATE_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_state():
+    with open(STATE_FILE, "w") as f:
+        json.dump(STATE, f)
+
+STATE = load_state()
+
+# =========================
 # HELPERS
-# =====================================================
+# =========================
 def now():
     return time.time()
+
+def get_position(symbol):
+    try:
+        return api.get_position(symbol)
+    except:
+        return None
+
+def cancel_open_orders(symbol):
+    orders = api.list_orders(status="open", symbols=[symbol])
+    for o in orders:
+        api.cancel_order(o.id)
 
 def get_prices(symbol):
     q = api.get_latest_quote(symbol)
     ask = float(q.ap)
     bid = float(q.bp)
     mid = (ask + bid) / 2
-    spread_pct = (ask - bid) / mid if mid > 0 else 0
+    spread = ask - bid
+    spread_pct = spread / mid if mid > 0 else 0
     return ask, bid, spread_pct
 
 def make_event_id(data):
-    if data.get("event_id"):
-        return data["event_id"]
-    raw = f"{data.get('symbol')}|{data.get('signal')}|{data.get('time')}"
+    raw = f"{data.get('symbol')}|{data.get('signal')}|{data.get('time',0)}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
 def is_stale(event_time):
     return (now() - event_time / 1000) > MAX_AGE
 
-# =====================================================
+# =========================
 # WEBHOOK
-# =====================================================
+# =========================
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
-        print("RAW:", request.data, flush=True)
         data = request.get_json(force=True)
-        print("WEBHOOK RECEIVED:", data, flush=True)
+        print("RAW:", request.data, flush=True)
+        print("PARSED:", data, flush=True)
 
-        # -----------------------------
-        # CLEAN INPUT
-        # -----------------------------
-        symbol = data.get("symbol", "").strip().upper()
-        signal = (data.get("signal") or "").strip().upper()
+        symbol = data.get("symbol")
+        signal = (data.get("signal") or "").upper()
         qty = float(data.get("qty", 0))
-        event_time = int(data.get("time", 0))
+        offset = float(data.get("limit_offset", 0.01))
 
-        if signal not in ["LONG", "EXIT LONG"]:
-            return jsonify({"error": "invalid signal"}), 400
+        # fallback if no time provided
+        event_time = data.get("time")
+        if not event_time:
+            event_time = int(time.time() * 1000)
+            print("⚠️ Missing time, using server time", flush=True)
 
-        if not symbol or qty <= 0 or not event_time:
-            return jsonify({"error": "invalid input"}), 400
+        # basic validation
+        if not symbol or signal not in ["LONG", "EXIT LONG"]:
+            return jsonify({"error": "invalid payload"}), 400
 
-        # -----------------------------
-        # STATE INIT
-        # -----------------------------
+        # warmup protection (after restart)
+        if now() - START_TIME < WARMUP:
+            print("WARMUP BLOCK", flush=True)
+            return jsonify({"status": "warming_up"}), 200
+
+        # init symbol state
         if symbol not in STATE:
             STATE[symbol] = {
                 "last_event_time": 0,
-                "last_signal": None,
-                "last_trade_time": 0,
-                "last_event_id": None,
-                "in_position": False
+                "last_event_id": None
             }
 
         state = STATE[symbol]
-        print("STATE DEBUG:", state, flush=True)
-        # -----------------------------
-        # FILTERS
-        # -----------------------------
-        if is_stale(event_time):
-            return jsonify({"status": "stale_ignored"}), 200
 
+        print("STATE BEFORE:", state, flush=True)
+
+        # stale filter (log, don’t silently kill)
+        if is_stale(event_time):
+            print("⚠️ STALE SIGNAL", flush=True)
+
+        # ordering
         if event_time < state["last_event_time"]:
+            print("IGNORED: out of order", flush=True)
             return jsonify({"status": "out_of_order"}), 200
 
+        # dedup
         event_id = make_event_id(data)
         if event_id == state["last_event_id"]:
+            print("IGNORED: duplicate", flush=True)
             return jsonify({"status": "duplicate"}), 200
 
-        if now() - state["last_trade_time"] < COOLDOWN:
-            return jsonify({"status": "cooldown"}), 200
-
-        # update state tracking
+        # update state
         state["last_event_time"] = event_time
         state["last_event_id"] = event_id
-        state["last_signal"] = signal
+        save_state()
 
-        # -----------------------------
-        # MARKET DATA
-        # -----------------------------
-        ask, bid, spread = get_prices(symbol)
+        # market + position
+        ask, bid, spread_pct = get_prices(symbol)
+        position = get_position(symbol)
+        is_long = position is not None
 
-        # 🔥 USE INTERNAL STATE ONLY (IMPORTANT FIX)
-        is_long = state["in_position"]
+        print(f"{symbol} | {signal} | pos={is_long} | spread={spread_pct:.4f}", flush=True)
 
-        print(f"{symbol} | {signal} | in_position={is_long}", flush=True)
-
-        # =====================================================
-        # LONG ENTRY
-        # =====================================================
+        # =====================
+        # LONG
+        # =====================
         if signal == "LONG":
-
             if is_long:
-                return jsonify({"status": "already_in_position"}), 200
+                print("SKIP: already long", flush=True)
+                return jsonify({"status": "already_long"}), 200
 
-            order = api.submit_order(
+            cancel_open_orders(symbol)
+
+            price = ask * (1 + offset if spread_pct <= 0.005 else 1 + offset * 2)
+
+            print(f"BUY → {symbol} qty={qty} price={price}", flush=True)
+
+            api.submit_order(
                 symbol=symbol,
                 qty=qty,
                 side="buy",
-                type="market",
-                time_in_force="day"
+                type="limit",
+                time_in_force="day",
+                limit_price=round(price, 2),
+                extended_hours=True
             )
 
-            print("ALPACA ORDER SENT:", order, flush=True)
+            return jsonify({"status": "long_sent"}), 200
 
-            state["in_position"] = True
-            state["last_trade_time"] = now()
-
-            return jsonify({"status": "LONG executed"})
-
-        # =====================================================
-        # EXIT LONG
-        # =====================================================
+        # =====================
+        # EXIT
+        # =====================
         if signal == "EXIT LONG":
-
             if not is_long:
+                print("SKIP: no position", flush=True)
                 return jsonify({"status": "no_position"}), 200
 
-            qty_to_sell = abs(state.get("qty", qty))
+            cancel_open_orders(symbol)
 
-            order = api.submit_order(
+            actual_qty = abs(float(position.qty))
+
+            price = bid * (1 - offset if spread_pct <= 0.005 else 1 - offset * 2)
+
+            print(f"SELL → {symbol} qty={actual_qty} price={price}", flush=True)
+
+            api.submit_order(
                 symbol=symbol,
-                qty=qty_to_sell,
+                qty=actual_qty,
                 side="sell",
-                type="market",
-                time_in_force="day"
+                type="limit",
+                time_in_force="day",
+                limit_price=round(price, 2),
+                extended_hours=True
             )
 
-            print("ALPACA EXIT SENT:", order, flush=True)
+            return jsonify({"status": "exit_sent"}), 200
 
-            state["in_position"] = False
-            state["last_trade_time"] = now()
-
-            return jsonify({"status": "EXIT executed"})
+        return jsonify({"status": "ignored"}), 200
 
     except Exception as e:
         print("ERROR:", str(e), flush=True)
         return jsonify({"error": str(e)}), 500
 
-# =====================================================
-# HEALTH CHECK
-# =====================================================
+
 @app.route("/")
 def home():
     return "Bot running"
 
-@app.route("/ping")
-def ping():
-    return "PING OK"
 
-# =====================================================
-# ENTRY POINT
-# =====================================================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
