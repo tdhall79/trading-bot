@@ -72,6 +72,7 @@ def is_stale(event_time):
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
+        print("RAW:", request.data, flush=True)
         data = request.get_json(force=True)
         print("WEBHOOK RECEIVED:", data, flush=True)
 
@@ -236,3 +237,4 @@ if __name__ == "__main__":
 @app.route("/ping")
 def ping():
     return "PING OK"
+    
