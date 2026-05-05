@@ -13,8 +13,11 @@ api = tradeapi.REST(
     base_url="https://api.alpaca.markets"
 )
 
+# =========================
+# CONFIG
+# =========================
 DEFAULT_NOTIONAL = 7000
-EXTENDED_LIMIT_OFFSET = 0.005
+EXTENDED_LIMIT_OFFSET = 0.005   # 0.5% above ask for limit orders
 
 last_signal = {}
 
@@ -22,11 +25,17 @@ last_signal = {}
 def home():
     return "ALIVE", 200
 
+# =========================
+# TIME HELPERS
+# =========================
 def is_regular_hours():
     eastern = pytz.timezone("US/Eastern")
     now = datetime.now(eastern).time()
     return time(9, 30) <= now <= time(16, 0)
 
+# =========================
+# ALPACA HELPERS
+# =========================
 def get_position(symbol):
     try:
         pos = api.get_position(symbol)
@@ -42,31 +51,47 @@ def get_quote(symbol):
         return 0, 0
 
 def calc_qty(notional, price):
-    if price <= 0: return 0
+    if price <= 0: 
+        return 0
     return int(notional / price)
 
 def sell_qty(symbol, qty):
-    if qty <= 0: return
+    if qty <= 0: 
+        return
     try:
-        api.submit_order(symbol=symbol, qty=qty, side="sell", type="market", time_in_force="day", reduce_only=True)
-        print(f"SELL {qty} of {symbol}", flush=True)
+        api.submit_order(
+            symbol=symbol, 
+            qty=qty, 
+            side="sell", 
+            type="market", 
+            time_in_force="day",
+            reduce_only=True
+        )
+        print(f"SELL {qty} {symbol}", flush=True)
     except Exception as e:
         print("SELL ERROR:", str(e), flush=True)
 
 def close_position(symbol):
     try:
         api.close_position(symbol)
-        print(f"FULL CLOSE executed for {symbol}", flush=True)
+        print(f"FULL CLOSE {symbol}", flush=True)
     except Exception as e:
         print("CLOSE ERROR:", str(e), flush=True)
 
+# =========================
+# SIGNAL PROCESSING
+# =========================
 def normalize_signal(raw):
-    if not raw: return ""
+    if not raw: 
+        return ""
     s = str(raw).upper().strip()
     for ch in [" ", "-", "_", "|", "."]:
         s = s.replace(ch, "")
-    if any(x in s for x in ["LONG", "ENTRY", "OPENLONG"]): return "OPEN_LONG"
-    if any(x in s for x in ["EXIT", "CLOSE", "SL", "BE"]): return "EXIT_LONG"
+    
+    if any(x in s for x in ["LONG", "ENTRY", "OPENLONG"]): 
+        return "OPEN_LONG"
+    if any(x in s for x in ["EXIT", "CLOSE", "SL", "BE"]): 
+        return "EXIT_LONG"
     if "TP1" in s: return "TP1"
     if "TP2" in s: return "TP2"
     if "TP3" in s: return "TP3"
@@ -81,6 +106,9 @@ def already_fired(symbol, signal):
     last_signal[key] = now
     return False
 
+# =========================
+# WEBHOOK
+# =========================
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
@@ -89,6 +117,7 @@ def webhook():
         print(raw, flush=True)
         print("Content-Type:", request.headers.get('Content-Type'), flush=True)
 
+        # Parse JSON
         data = None
         try:
             data = request.get_json(force=True, silent=True)
@@ -111,32 +140,60 @@ def webhook():
         notional = float(data.get("notional") or DEFAULT_NOTIONAL)
 
         signal = normalize_signal(raw_signal)
-        print(f"FINAL PARSED → Symbol: {symbol} | Signal: {raw_signal} → {signal}", flush=True)
+        print(f"FINAL PARSED → {symbol} | Raw: {raw_signal} → {signal} | Notional: ${notional}", flush=True)
 
         if not symbol or not signal:
             return jsonify({"status": "bad_payload"}), 200
 
         if already_fired(symbol, signal):
-            print("Duplicate signal ignored", flush=True)
             return jsonify({"status": "duplicate"}), 200
 
         qty_pos = get_position(symbol)
+        regular = is_regular_hours()
 
+        # ==================== OPEN LONG ====================
         if signal == "OPEN_LONG":
             if qty_pos > 0:
                 return jsonify({"status": "already_in_position"}), 200
+
             ask, _ = get_quote(symbol)
             qty = calc_qty(notional, ask)
-            if qty > 0:
-                api.submit_order(symbol=symbol, qty=qty, side="buy", type="market", time_in_force="day")
-                print(f"BUY {qty} {symbol} executed", flush=True)
+            if qty <= 0:
+                return jsonify({"status": "qty_fail"}), 200
+
+            if regular:
+                # Regular hours → Market Order
+                api.submit_order(
+                    symbol=symbol,
+                    qty=qty,
+                    side="buy",
+                    type="market",
+                    time_in_force="day"
+                )
+                print(f"MARKET BUY {qty} {symbol} (Regular Hours)", flush=True)
+            else:
+                # Extended hours → Limit Order with offset
+                limit_price = round(ask * (1 + EXTENDED_LIMIT_OFFSET), 2)
+                api.submit_order(
+                    symbol=symbol,
+                    qty=qty,
+                    side="buy",
+                    type="limit",
+                    time_in_force="day",
+                    limit_price=limit_price,
+                    extended_hours=True
+                )
+                print(f"LIMIT BUY {qty} {symbol} @ {limit_price} (Extended Hours)", flush=True)
+
             return jsonify({"status": "entry_sent"}), 200
 
+        # ==================== EXITS ====================
         if signal == "EXIT_LONG":
             if qty_pos > 0:
                 close_position(symbol)
             return jsonify({"status": "exit_sent"}), 200
 
+        # ==================== TAKE PROFITS ====================
         if qty_pos <= 0:
             return jsonify({"status": "no_position"}), 200
 
@@ -153,7 +210,7 @@ def webhook():
         return jsonify({"status": "processed"}), 200
 
     except Exception as e:
-        print("ERROR:", str(e), flush=True)
+        print("WEBHOOK ERROR:", str(e), flush=True)
         return jsonify({"status": "error"}), 200
 
 
