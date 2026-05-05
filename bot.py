@@ -90,7 +90,7 @@ def close_position(symbol):
         print("CLOSE ERROR:", str(e), flush=True)
 
 # =========================
-# SIGNAL NORMALIZER
+# NORMALIZER
 # =========================
 def normalize_signal(raw):
     if not raw:
@@ -101,33 +101,27 @@ def normalize_signal(raw):
     for ch in [" ", "-", "_", "|"]:
         s = s.replace(ch, "")
 
-    print("NORMALIZED RAW:", s, flush=True)
+    print("NORMALIZED:", s, flush=True)
 
-    # ENTRY
-    if "LONG" == s:
-        return "OPEN_LONG"
-    if "ENTRY" in s:
+    if "LONG" == s or "ENTRY" in s:
         return "OPEN_LONG"
 
-    # EXIT
     if "EXIT" in s or "CLOSE" in s:
         return "EXIT_LONG"
 
-    # STOP / BE
     if "SL" in s or "STOP" in s:
         return "SL"
 
     if "BE" in s or "BREAKEVEN" in s:
         return "BE"
 
-    # TP LEVELS
-    if "TP1" in s or "TAKEPROFIT1" in s:
+    if "TP1" in s:
         return "TP1"
-    if "TP2" in s or "TAKEPROFIT2" in s:
+    if "TP2" in s:
         return "TP2"
-    if "TP3" in s or "TAKEPROFIT3" in s:
+    if "TP3" in s:
         return "TP3"
-    if "TP4" in s or "TAKEPROFIT4" in s:
+    if "TP4" in s:
         return "TP4"
 
     return ""
@@ -158,12 +152,27 @@ def webhook():
         if not data:
             return jsonify({"status": "empty"}), 200
 
-        symbol = data.get("ticker") or data.get("symbol")
-        raw_signal = data.get("signal")
+        # =========================
+        # ROBUST FIELD EXTRACTION (FIX)
+        # =========================
+        symbol = (
+            data.get("ticker")
+            or data.get("symbol")
+            or data.get("SYMBOL")
+            or data.get("TICKER")
+        )
+
+        raw_signal = (
+            data.get("signal")
+            or data.get("order")
+            or data.get("message")
+            or data.get("SIGNAL")
+        )
 
         signal = normalize_signal(raw_signal)
 
         print("PARSED:", symbol, raw_signal, "->", signal, flush=True)
+        print("FIELDS:", list(data.keys()), flush=True)
 
         if not symbol or not signal:
             return jsonify({"status": "bad_payload"}), 200
@@ -243,7 +252,7 @@ def webhook():
         return jsonify({"status": "tp_sent"}), 200
 
     except Exception as e:
-        print("FATAL ERROR:", str(e), flush=True)
+        print("ERROR:", str(e), flush=True)
         return jsonify({"status": "error_handled"}), 200
 
 
