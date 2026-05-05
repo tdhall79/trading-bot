@@ -3,6 +3,7 @@ import alpaca_trade_api as tradeapi
 import os
 from datetime import datetime, time
 import pytz
+import time as pytime
 
 app = Flask(__name__)
 
@@ -19,7 +20,13 @@ DEFAULT_NOTIONAL = 7000
 EXTENDED_LIMIT_OFFSET = 0.005
 
 # =========================
-# SESSION CHECK (ENTRY ONLY)
+# STATE (TP CONTROL)
+# =========================
+last_signal = {}
+tp1_armed = {}
+
+# =========================
+# SESSION CHECK
 # =========================
 def is_regular_hours():
     eastern = pytz.timezone("US/Eastern")
@@ -51,6 +58,38 @@ def calc_qty(notional, price):
     return int(notional / price)
 
 # =========================
+# HELPERS
+# =========================
+def sell_qty(symbol, qty):
+    if qty <= 0:
+        return
+
+    api.submit_order(
+        symbol=symbol,
+        qty=qty,
+        side="sell",
+        type="market",
+        time_in_force="day",
+        reduce_only=True
+    )
+
+def close_position(symbol):
+    try:
+        api.close_position(symbol)
+    except:
+        pass
+
+def already_fired(symbol, signal):
+    key = f"{symbol}:{signal}"
+    now = pytime.time()
+
+    if key in last_signal and now - last_signal[key] < 2:
+        return True
+
+    last_signal[key] = now
+    return False
+
+# =========================
 # WEBHOOK
 # =========================
 @app.route("/webhook", methods=["POST"])
@@ -60,35 +99,37 @@ def webhook():
 
         print("WEBHOOK:", data, flush=True)
 
-        symbol = data.get("symbol")
+        symbol = data.get("ticker") or data.get("symbol")
         signal = (data.get("signal") or "").upper()
 
         if not symbol or not signal:
             return jsonify({"error": "invalid payload"}), 400
 
-        ask, bid = get_quote(symbol)
         position = get_position(symbol)
         is_long = position is not None
-
         regular = is_regular_hours()
 
-        # =====================
-        # OPEN LONG (SESSION-AWARE)
-        # =====================
-        if signal == "LONG":
+        # =========================
+        # DUPLICATE GUARD
+        # =========================
+        if already_fired(symbol, signal):
+            return jsonify({"status": "duplicate_ignored"}), 200
+
+        # =========================
+        # OPEN LONG
+        # =========================
+        if signal == "OPEN_LONG":
 
             if is_long:
                 return jsonify({"status": "already_in_position"}), 200
 
-            notional = float(data.get("notional", DEFAULT_NOTIONAL))
-            entry_price = ask
+            ask, _ = get_quote(symbol)
 
-            qty = calc_qty(notional, entry_price)
+            qty = calc_qty(DEFAULT_NOTIONAL, ask)
 
             if qty <= 0:
-                return jsonify({"error": "qty_calculation_failed"}), 400
+                return jsonify({"error": "qty_calc_failed"}), 400
 
-            # REGULAR HOURS → MARKET
             if regular:
                 api.submit_order(
                     symbol=symbol,
@@ -97,14 +138,8 @@ def webhook():
                     type="market",
                     time_in_force="day"
                 )
+                return jsonify({"status": "long_market", "qty": qty})
 
-                return jsonify({
-                    "status": "long_market",
-                    "qty": qty,
-                    "notional": notional
-                })
-
-            # EXTENDED HOURS → AGGRESSIVE LIMIT
             limit_price = round(ask * (1 + EXTENDED_LIMIT_OFFSET), 2)
 
             api.submit_order(
@@ -120,58 +155,61 @@ def webhook():
             return jsonify({
                 "status": "long_limit_extended",
                 "qty": qty,
-                "limit_price": limit_price,
-                "notional": notional
+                "limit_price": limit_price
             })
 
-        # =====================
-        # EXIT LONG (ALWAYS EXECUTES - NO FILTERS)
-        # =====================
-        if signal == "EXIT LONG":
+        # =========================
+        # FULL EXIT GROUP
+        # =========================
+        if signal in ["CLOSE_LONG", "EXIT_LONG", "BE", "SL"]:
 
             if not is_long:
                 return jsonify({"status": "no_position"}), 200
 
-            qty = float(position.qty)
+            close_position(symbol)
+            tp1_armed[symbol] = False
 
-            # ALWAYS MARKET OR LIQUIDITY-ADJUSTED LIMIT
-            # (we still choose smart execution, but never block)
+            return jsonify({"status": "position_closed"}), 200
 
-            if regular:
-                api.submit_order(
-                    symbol=symbol,
-                    qty=qty,
-                    side="sell",
-                    type="market",
-                    time_in_force="day"
-                )
+        # =========================
+        # TP1_SL (STATE CHANGE ONLY)
+        # =========================
+        if signal == "TP1_SL":
+            tp1_armed[symbol] = True
+            return jsonify({"status": "tp1_stop_armed"}), 200
 
-                return jsonify({
-                    "status": "exit_market_executed",
-                    "qty_closed": qty
-                })
+        # =========================
+        # TAKE PROFITS (DYNAMIC POSITION BASED)
+        # =========================
+        if not is_long:
+            return jsonify({"status": "no_position"}), 200
 
-            # extended hours exit
-            limit_price = round(bid * (1 - EXTENDED_LIMIT_OFFSET), 2)
+        qty = float(position.qty)
 
-            api.submit_order(
-                symbol=symbol,
-                qty=qty,
-                side="sell",
-                type="limit",
-                time_in_force="day",
-                limit_price=limit_price,
-                extended_hours=True
-            )
+        if signal == "TP1":
+            sell_qty(symbol, int(qty * 0.25))
 
-            return jsonify({
-                "status": "exit_limit_extended",
-                "qty_closed": qty,
-                "limit_price": limit_price
-            })
+        elif signal == "TP2":
+            sell_qty(symbol, int(qty * 0.20))
 
-        return jsonify({"error": "unknown signal"}), 400
+        elif signal == "TP3":
+            sell_qty(symbol, int(qty * 0.10))
+
+        elif signal == "TP4":
+            sell_qty(symbol, int(qty * 0.10))
+
+        else:
+            return jsonify({"error": "unknown signal"}), 400
+
+        return jsonify({"status": "tp_executed", "signal": signal}), 200
 
     except Exception as e:
         print("ERROR:", str(e), flush=True)
         return jsonify({"error": str(e)}), 500
+
+
+# =========================
+# RUN
+# =========================
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
