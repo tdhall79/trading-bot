@@ -26,7 +26,7 @@ last_signal = {}
 tp1_armed = {}
 
 # =========================
-# SESSION CHECK
+# SESSION
 # =========================
 def is_regular_hours():
     eastern = pytz.timezone("US/Eastern")
@@ -59,7 +59,7 @@ def calc_qty(notional, price):
     return int(notional / price)
 
 # =========================
-# ORDER HELPERS
+# ORDERS
 # =========================
 def sell_qty(symbol, qty):
     if qty <= 0:
@@ -83,41 +83,60 @@ def close_position(symbol):
         print("CLOSE ERROR:", str(e), flush=True)
 
 # =========================
-# SIGNAL NORMALIZER (KEY UPGRADE)
+# 🔥 ULTRA-ROBUST NORMALIZER (FIXED CORE ISSUE)
 # =========================
 def normalize_signal(raw):
     if not raw:
         return ""
 
-    s = raw.upper().strip()
+    s = str(raw).upper().strip()
 
     # remove noise characters
-    for ch in [" ", "-", "_"]:
+    for ch in [" ", "-", "_", "|"]:
         s = s.replace(ch, "")
 
+    print("NORMALIZED RAW:", s, flush=True)
+
+    # =========================
     # ENTRY
+    # =========================
     if "LONG" == s:
         return "OPEN_LONG"
 
+    if "ENTRY" in s:
+        return "OPEN_LONG"
+
+    # =========================
     # EXIT GROUP
-    if "CLOSE" in s or "EXIT" in s:
+    # =========================
+    if "EXIT" in s or "CLOSE" in s:
         return "EXIT_LONG"
 
-    # STOP LOSS GROUP
+    # =========================
+    # STOP / BREAKEVEN GROUP
+    # =========================
     if "SL" in s or "STOP" in s:
         return "SL"
 
-    # TP MATCHING (VERY FLEXIBLE)
+    if "BE" in s or "BREAKEVEN" in s:
+        return "BE"
+
+    # =========================
+    # TAKE PROFITS (VERY FLEXIBLE)
+    # =========================
     if "TP1" in s or "TAKEPROFIT1" in s:
         return "TP1"
+
     if "TP2" in s or "TAKEPROFIT2" in s:
         return "TP2"
+
     if "TP3" in s or "TAKEPROFIT3" in s:
         return "TP3"
+
     if "TP4" in s or "TAKEPROFIT4" in s:
         return "TP4"
 
-    return s
+    return ""
 
 # =========================
 # DUPLICATE GUARD
@@ -140,7 +159,7 @@ def webhook():
     try:
         data = request.get_json(force=True, silent=True)
 
-        print("RAW:", data, flush=True)
+        print("RAW WEBHOOK:", data, flush=True)
 
         if not data:
             return jsonify({"status": "empty"}), 200
@@ -199,9 +218,9 @@ def webhook():
             return jsonify({"status": "entry_sent"}), 200
 
         # =========================
-        # FULL EXIT GROUP
+        # EXIT GROUP
         # =========================
-        if signal in ["EXIT_LONG", "BE", "SL"]:
+        if signal in ["EXIT_LONG", "SL", "BE"]:
 
             close_position(symbol)
             tp1_armed[symbol] = False
@@ -209,7 +228,7 @@ def webhook():
             return jsonify({"status": "exit_sent"}), 200
 
         # =========================
-        # TP LOGIC (SAFE)
+        # TP LOGIC
         # =========================
         if qty_position <= 0:
             return jsonify({"status": "no_position"}), 200
@@ -229,12 +248,12 @@ def webhook():
             sell_qty(symbol, int(qty * 0.10))
 
         else:
-            return jsonify({"status": "ignored_signal"}), 200
+            return jsonify({"status": "ignored"}), 200
 
         return jsonify({"status": "tp_sent"}), 200
 
     except Exception as e:
-        print("FATAL:", str(e), flush=True)
+        print("FATAL ERROR:", str(e), flush=True)
         return jsonify({"status": "error_handled"}), 200
 
 
