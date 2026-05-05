@@ -20,7 +20,7 @@ DEFAULT_NOTIONAL = 7000
 EXTENDED_LIMIT_OFFSET = 0.005
 
 # =========================
-# STATE (TP CONTROL)
+# STATE
 # =========================
 last_signal = {}
 tp1_armed = {}
@@ -34,7 +34,7 @@ def is_regular_hours():
     return time(9, 30) <= now <= time(16, 0)
 
 # =========================
-# POSITION
+# DATA HELPERS
 # =========================
 def get_position(symbol):
     try:
@@ -42,23 +42,17 @@ def get_position(symbol):
     except:
         return None
 
-# =========================
-# PRICE
-# =========================
 def get_quote(symbol):
     q = api.get_latest_quote(symbol)
     return float(q.ap), float(q.bp)
 
-# =========================
-# SIZE CALC
-# =========================
 def calc_qty(notional, price):
     if price <= 0:
         return 0
     return int(notional / price)
 
 # =========================
-# HELPERS
+# ORDER HELPERS
 # =========================
 def sell_qty(symbol, qty):
     if qty <= 0:
@@ -99,19 +93,25 @@ def webhook():
 
         print("WEBHOOK:", data, flush=True)
 
+        # =========================
+        # COMPATIBILITY LAYER
+        # =========================
         symbol = data.get("ticker") or data.get("symbol")
         signal = (data.get("signal") or "").upper()
+
+        if signal == "LONG":
+            signal = "OPEN_LONG"
 
         if not symbol or not signal:
             return jsonify({"error": "invalid payload"}), 400
 
+        # =========================
+        # POSITION STATE
+        # =========================
         position = get_position(symbol)
         is_long = position is not None
         regular = is_regular_hours()
 
-        # =========================
-        # DUPLICATE GUARD
-        # =========================
         if already_fired(symbol, signal):
             return jsonify({"status": "duplicate_ignored"}), 200
 
@@ -125,7 +125,8 @@ def webhook():
 
             ask, _ = get_quote(symbol)
 
-            qty = calc_qty(DEFAULT_NOTIONAL, ask)
+            notional = float(data.get("notional", DEFAULT_NOTIONAL))
+            qty = calc_qty(notional, ask)
 
             if qty <= 0:
                 return jsonify({"error": "qty_calc_failed"}), 400
@@ -172,14 +173,14 @@ def webhook():
             return jsonify({"status": "position_closed"}), 200
 
         # =========================
-        # TP1_SL (STATE CHANGE ONLY)
+        # TP1 SL (STATE ONLY)
         # =========================
         if signal == "TP1_SL":
             tp1_armed[symbol] = True
-            return jsonify({"status": "tp1_stop_armed"}), 200
+            return jsonify({"status": "tp1_armed"}), 200
 
         # =========================
-        # TAKE PROFITS (DYNAMIC POSITION BASED)
+        # TAKE PROFITS
         # =========================
         if not is_long:
             return jsonify({"status": "no_position"}), 200
