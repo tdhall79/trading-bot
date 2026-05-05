@@ -26,6 +26,13 @@ last_signal = {}
 tp1_armed = {}
 
 # =========================
+# HEALTH CHECK (REQUIRED FOR RENDER)
+# =========================
+@app.route("/", methods=["GET"])
+def home():
+    return "ALIVE", 200
+
+# =========================
 # SESSION
 # =========================
 def is_regular_hours():
@@ -83,7 +90,7 @@ def close_position(symbol):
         print("CLOSE ERROR:", str(e), flush=True)
 
 # =========================
-# 🔥 ULTRA-ROBUST NORMALIZER (FIXED CORE ISSUE)
+# SIGNAL NORMALIZER
 # =========================
 def normalize_signal(raw):
     if not raw:
@@ -91,48 +98,35 @@ def normalize_signal(raw):
 
     s = str(raw).upper().strip()
 
-    # remove noise characters
     for ch in [" ", "-", "_", "|"]:
         s = s.replace(ch, "")
 
     print("NORMALIZED RAW:", s, flush=True)
 
-    # =========================
     # ENTRY
-    # =========================
     if "LONG" == s:
         return "OPEN_LONG"
-
     if "ENTRY" in s:
         return "OPEN_LONG"
 
-    # =========================
-    # EXIT GROUP
-    # =========================
+    # EXIT
     if "EXIT" in s or "CLOSE" in s:
         return "EXIT_LONG"
 
-    # =========================
-    # STOP / BREAKEVEN GROUP
-    # =========================
+    # STOP / BE
     if "SL" in s or "STOP" in s:
         return "SL"
 
     if "BE" in s or "BREAKEVEN" in s:
         return "BE"
 
-    # =========================
-    # TAKE PROFITS (VERY FLEXIBLE)
-    # =========================
+    # TP LEVELS
     if "TP1" in s or "TAKEPROFIT1" in s:
         return "TP1"
-
     if "TP2" in s or "TAKEPROFIT2" in s:
         return "TP2"
-
     if "TP3" in s or "TAKEPROFIT3" in s:
         return "TP3"
-
     if "TP4" in s or "TAKEPROFIT4" in s:
         return "TP4"
 
@@ -237,16 +231,12 @@ def webhook():
 
         if signal == "TP1":
             sell_qty(symbol, int(qty * 0.25))
-
         elif signal == "TP2":
             sell_qty(symbol, int(qty * 0.20))
-
         elif signal == "TP3":
             sell_qty(symbol, int(qty * 0.10))
-
         elif signal == "TP4":
             sell_qty(symbol, int(qty * 0.10))
-
         else:
             return jsonify({"status": "ignored"}), 200
 
@@ -258,7 +248,8 @@ def webhook():
 
 
 # =========================
-# RUN
+# RUN (RENDER SAFE)
 # =========================
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
