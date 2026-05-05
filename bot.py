@@ -34,7 +34,7 @@ def is_regular_hours():
     return time(9, 30) <= now <= time(16, 0)
 
 # =========================
-# DATA HELPERS
+# HELPERS
 # =========================
 def get_position(symbol):
     try:
@@ -51,9 +51,6 @@ def calc_qty(notional, price):
         return 0
     return int(notional / price)
 
-# =========================
-# ORDER HELPERS
-# =========================
 def sell_qty(symbol, qty):
     if qty <= 0:
         return
@@ -94,7 +91,7 @@ def webhook():
         print("WEBHOOK:", data, flush=True)
 
         # =========================
-        # COMPATIBILITY LAYER
+        # INPUT NORMALIZATION
         # =========================
         symbol = data.get("ticker") or data.get("symbol")
         signal = (data.get("signal") or "").upper()
@@ -109,7 +106,7 @@ def webhook():
         # POSITION STATE
         # =========================
         position = get_position(symbol)
-        is_long = position is not None
+        is_long = position is not None and float(position.qty) > 0
         regular = is_regular_hours()
 
         if already_fired(symbol, signal):
@@ -160,7 +157,7 @@ def webhook():
             })
 
         # =========================
-        # FULL EXIT GROUP
+        # FULL EXIT GROUP (SAFE)
         # =========================
         if signal in ["CLOSE_LONG", "EXIT_LONG", "BE", "SL"]:
 
@@ -180,12 +177,15 @@ def webhook():
             return jsonify({"status": "tp1_armed"}), 200
 
         # =========================
-        # TAKE PROFITS
+        # TAKE PROFITS (SAFE GUARD FIX)
         # =========================
         if not is_long:
             return jsonify({"status": "no_position"}), 200
 
         qty = float(position.qty)
+
+        if qty <= 0:
+            return jsonify({"status": "flat"}), 200
 
         if signal == "TP1":
             sell_qty(symbol, int(qty * 0.25))
@@ -202,7 +202,7 @@ def webhook():
         else:
             return jsonify({"error": "unknown signal"}), 400
 
-        return jsonify({"status": "tp_executed", "signal": signal}), 200
+        return jsonify({"status": "tp_executed"}), 200
 
     except Exception as e:
         print("ERROR:", str(e), flush=True)
