@@ -14,7 +14,7 @@ api = tradeapi.REST(
 )
 
 DEFAULT_NOTIONAL = 7000
-EXTENDED_LIMIT_OFFSET = 0.005
+EXTENDED_LIMIT_OFFSET = 0.015   # Increased from 0.005 → 1.5%
 
 last_signal = {}
 
@@ -56,34 +56,23 @@ def sell_qty(symbol, qty):
 def close_position(symbol):
     try:
         api.close_position(symbol)
-        print(f"FULL CLOSE executed for {symbol}", flush=True)
+        print(f"FULL CLOSE {symbol}", flush=True)
     except Exception as e:
         print("CLOSE ERROR:", str(e), flush=True)
 
-# =========================
-# FIXED NORMALIZER
-# =========================
 def normalize_signal(raw):
-    if not raw: 
-        return ""
-    
+    if not raw: return ""
     s = str(raw).upper().strip()
-    # Remove spaces and separators
     s = s.replace(" ", "").replace("-", "").replace("_", "").replace("|", "").replace(".", "")
     
-    print(f"NORMALIZED: '{raw}' → '{s}'", flush=True)   # Extra debug line
+    print(f"NORMALIZED: '{raw}' → '{s}'", flush=True)
 
-    if any(x in s for x in ["LONG", "ENTRY", "OPENLONG"]): 
-        return "OPEN_LONG"
-    
-    if any(x in s for x in ["EXITLONG", "CLOSELONG", "EXIT", "CLOSE", "SL", "BE"]): 
-        return "EXIT_LONG"
-    
+    if any(x in s for x in ["LONG", "ENTRY", "OPENLONG"]): return "OPEN_LONG"
+    if any(x in s for x in ["EXITLONG", "CLOSELONG", "EXIT", "CLOSE", "SL", "BE"]): return "EXIT_LONG"
     if "TP1" in s: return "TP1"
     if "TP2" in s: return "TP2"
     if "TP3" in s: return "TP3"
     if "TP4" in s: return "TP4"
-    
     return ""
 
 def already_fired(symbol, signal):
@@ -115,8 +104,7 @@ def webhook():
 
         print("PARSED DATA:", data, flush=True)
 
-        if not data:
-            return jsonify({"status": "no_data"}), 200
+        if not data: return jsonify({"status": "no_data"}), 200
 
         symbol = data.get("ticker") or data.get("symbol") or data.get("SYMBOL") or data.get("TICKER")
         raw_signal = data.get("signal")
@@ -144,13 +132,25 @@ def webhook():
                 return jsonify({"status": "qty_fail"}), 200
 
             if regular:
-                api.submit_order(symbol=symbol, qty=qty, side="buy", type="market", time_in_force="day")
-                print(f"MARKET BUY {qty} {symbol} (Regular)", flush=True)
+                # Regular hours - Market
+                api.submit_order(
+                    symbol=symbol, qty=qty, side="buy", 
+                    type="market", time_in_force="day"
+                )
+                print(f"MARKET BUY {qty} {symbol} (RTH)", flush=True)
             else:
+                # Extended hours - More aggressive limit
                 limit_price = round(ask * (1 + EXTENDED_LIMIT_OFFSET), 2)
-                api.submit_order(symbol=symbol, qty=qty, side="buy", type="limit", 
-                               time_in_force="day", limit_price=limit_price, extended_hours=True)
-                print(f"LIMIT BUY {qty} {symbol} @ {limit_price} (Extended)", flush=True)
+                api.submit_order(
+                    symbol=symbol,
+                    qty=qty,
+                    side="buy",
+                    type="limit",
+                    time_in_force="day",
+                    limit_price=limit_price,
+                    extended_hours=True
+                )
+                print(f"LIMIT BUY {qty} {symbol} @ {limit_price} (EXTENDED - {EXTENDED_LIMIT_OFFSET*100:.1f}% offset)", flush=True)
 
             return jsonify({"status": "entry_sent"}), 200
 
@@ -158,15 +158,14 @@ def webhook():
             if qty_pos > 0:
                 close_position(symbol)
             else:
-                print(f"EXIT signal received but no position in {symbol}", flush=True)
+                print(f"EXIT received - No position in {symbol}", flush=True)
             return jsonify({"status": "exit_sent"}), 200
 
-        # Take Profits
         if qty_pos <= 0:
             return jsonify({"status": "no_position"}), 200
 
         qty = float(qty_pos)
-        if signal == "TP1":   sell_qty(symbol, int(qty * 0.25))
+        if signal == "TP1": sell_qty(symbol, int(qty * 0.25))
         elif signal == "TP2": sell_qty(symbol, int(qty * 0.20))
         elif signal == "TP3": sell_qty(symbol, int(qty * 0.10))
         elif signal == "TP4": sell_qty(symbol, int(qty * 0.10))
