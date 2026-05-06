@@ -60,6 +60,9 @@ def close_position(symbol):
     except Exception as e:
         print("CLOSE ERROR:", str(e), flush=True)
 
+# =========================
+# SIGNAL NORMALIZER
+# =========================
 def normalize_signal(raw):
     if not raw: return ""
     s = str(raw).upper().strip()
@@ -76,8 +79,16 @@ def normalize_signal(raw):
     if "TP4" in s: return "TP4"
     return ""
 
+def already_fired(symbol, signal):
+    key = f"{symbol}:{signal}"
+    now = pytime.time()
+    if key in last_signal and now - last_signal[key] < 1.5:
+        return True
+    last_signal[key] = now
+    return False
+
 # =========================
-# WEBHOOK - IMPROVED
+# WEBHOOK WITH FALLBACK
 # =========================
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -87,6 +98,9 @@ def webhook():
         print(raw_bytes, flush=True)
 
         data = None
+        raw_text = ""
+
+        # Try JSON first
         try:
             data = request.get_json(force=True, silent=True)
         except:
@@ -99,12 +113,20 @@ def webhook():
             except:
                 pass
 
+        # Fallback: Plain text / non-JSON
+        if not data:
+            raw_text = raw_bytes.decode('utf-8', errors='ignore').strip()
+            print(f"PLAIN TEXT FALLBACK: {raw_text[:200]}", flush=True)
+            
+            # Try to extract ticker and signal from text if possible
+            if "{{ticker}}" in raw_text or "LONG" in raw_text.upper() or "TP" in raw_text.upper():
+                print("Detected raw alert template - check your AlgoPro command boxes!", flush=True)
+                return jsonify({"status": "template_error"}), 200
+
         print("PARSED DATA:", data, flush=True)
 
         if not data:
-            raw_text = raw_bytes.decode('utf-8', errors='ignore').strip() if raw_bytes else ""
-            print(f"RAW TEXT FALLBACK: {raw_text[:300]}", flush=True)
-            return jsonify({"status": "no_json"}), 200
+            return jsonify({"status": "no_data"}), 200
 
         symbol = data.get("ticker") or data.get("symbol") or data.get("SYMBOL") or data.get("TICKER")
         raw_signal = data.get("signal")
@@ -116,7 +138,7 @@ def webhook():
         if not symbol or not signal:
             return jsonify({"status": "bad_payload"}), 200
 
-        if already_fired(symbol, signal):   # Note: function defined below
+        if already_fired(symbol, signal):
             return jsonify({"status": "duplicate"}), 200
 
         qty_pos = get_position(symbol)
@@ -124,7 +146,7 @@ def webhook():
 
         if signal == "OPEN_LONG":
             if qty_pos > 0:
-                print(f"Already in position for {symbol}", flush=True)
+                print(f"Already in {symbol}", flush=True)
                 return jsonify({"status": "already_in_position"}), 200
 
             ask, bid = get_quote(symbol)
@@ -155,25 +177,21 @@ def webhook():
                 print(f"EXIT - No position in {symbol}", flush=True)
             return jsonify({"status": "exit_sent"}), 200
 
-        # TAKE PROFIT SECTION
+        # TAKE PROFIT LOGIC
         if qty_pos <= 0:
             print(f"TP signal but no position in {symbol}", flush=True)
             return jsonify({"status": "no_position"}), 200
 
         qty = float(qty_pos)
         sold = 0
-        if signal == "TP1":
-            sold = int(qty * 0.25)
-        elif signal == "TP2":
-            sold = int(qty * 0.20)
-        elif signal == "TP3":
-            sold = int(qty * 0.10)
-        elif signal == "TP4":
-            sold = int(qty * 0.10)
+        if signal == "TP1": sold = int(qty * 0.25)
+        elif signal == "TP2": sold = int(qty * 0.20)
+        elif signal == "TP3": sold = int(qty * 0.10)
+        elif signal == "TP4": sold = int(qty * 0.10)
 
         if sold > 0:
             sell_qty(symbol, sold)
-            print(f"TP{signal[-1]}: Sold {sold} of {symbol}", flush=True)
+            print(f"✅ TP{signal[-1]}: Sold {sold}/{int(qty)} of {symbol}", flush=True)
         else:
             print(f"Ignored signal: {signal}", flush=True)
 
@@ -182,15 +200,6 @@ def webhook():
     except Exception as e:
         print("WEBHOOK ERROR:", str(e), flush=True)
         return jsonify({"status": "error"}), 200
-
-
-def already_fired(symbol, signal):
-    key = f"{symbol}:{signal}"
-    now = pytime.time()
-    if key in last_signal and now - last_signal[key] < 1.5:
-        return True
-    last_signal[key] = now
-    return False
 
 
 if __name__ == "__main__":
