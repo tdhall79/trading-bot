@@ -48,21 +48,29 @@ def calc_qty(notional, price):
 def sell_qty(symbol, qty):
     if qty <= 0: return
     try:
-        api.submit_order(symbol=symbol, qty=qty, side="sell", type="market", time_in_force="day", reduce_only=True)
-        print(f"SELL {qty} {symbol}", flush=True)
+        api.submit_order(
+            symbol=symbol,
+            qty=qty,
+            side="sell",
+            type="market",
+            time_in_force="day"
+            # Removed reduce_only — it was causing the error
+        )
+        print(f"✅ SOLD {qty} {symbol}", flush=True)
+        return True
     except Exception as e:
-        print("SELL ERROR:", str(e), flush=True)
+        print(f"SELL ERROR: {e}", flush=True)
+        return False
 
 def close_position(symbol):
     try:
         api.close_position(symbol)
-        print(f"FULL CLOSE executed for {symbol}", flush=True)
+        print(f"✅ FULL CLOSE executed for {symbol}", flush=True)
+        return True
     except Exception as e:
-        print("CLOSE ERROR:", str(e), flush=True)
+        print(f"CLOSE ERROR: {e}", flush=True)
+        return False
 
-# =========================
-# SIGNAL NORMALIZER
-# =========================
 def normalize_signal(raw):
     if not raw: return ""
     s = str(raw).upper().strip()
@@ -87,9 +95,6 @@ def already_fired(symbol, signal):
     last_signal[key] = now
     return False
 
-# =========================
-# WEBHOOK WITH FALLBACK
-# =========================
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
@@ -98,30 +103,16 @@ def webhook():
         print(raw_bytes, flush=True)
 
         data = None
-        raw_text = ""
-
-        # Try JSON first
         try:
             data = request.get_json(force=True, silent=True)
         except:
             pass
-
         if not data and raw_bytes:
             try:
                 import json
                 data = json.loads(raw_bytes.decode('utf-8', errors='ignore'))
             except:
                 pass
-
-        # Fallback: Plain text / non-JSON
-        if not data:
-            raw_text = raw_bytes.decode('utf-8', errors='ignore').strip()
-            print(f"PLAIN TEXT FALLBACK: {raw_text[:200]}", flush=True)
-            
-            # Try to extract ticker and signal from text if possible
-            if "{{ticker}}" in raw_text or "LONG" in raw_text.upper() or "TP" in raw_text.upper():
-                print("Detected raw alert template - check your AlgoPro command boxes!", flush=True)
-                return jsonify({"status": "template_error"}), 200
 
         print("PARSED DATA:", data, flush=True)
 
@@ -133,7 +124,7 @@ def webhook():
         notional = float(data.get("notional") or DEFAULT_NOTIONAL)
 
         signal = normalize_signal(raw_signal)
-        print(f"FINAL PARSED → {symbol} | Raw: {raw_signal} → {signal} | Notional: ${notional}", flush=True)
+        print(f"FINAL PARSED → {symbol} | Raw: {raw_signal} → {signal}", flush=True)
 
         if not symbol or not signal:
             return jsonify({"status": "bad_payload"}), 200
@@ -142,21 +133,18 @@ def webhook():
             return jsonify({"status": "duplicate"}), 200
 
         qty_pos = get_position(symbol)
-        regular = is_regular_hours()
+        print(f"Current position in {symbol}: {qty_pos}", flush=True)
 
         if signal == "OPEN_LONG":
             if qty_pos > 0:
-                print(f"Already in {symbol}", flush=True)
                 return jsonify({"status": "already_in_position"}), 200
 
-            ask, bid = get_quote(symbol)
+            ask, _ = get_quote(symbol)
             qty = calc_qty(notional, ask)
             if qty <= 0:
                 return jsonify({"status": "qty_fail"}), 200
 
-            print(f"Quote → Ask: {ask} | Bid: {bid}", flush=True)
-
-            if regular:
+            if is_regular_hours():
                 api.submit_order(symbol=symbol, qty=qty, side="buy", type="market", time_in_force="day")
                 print(f"MARKET BUY {qty} {symbol}", flush=True)
             else:
@@ -164,10 +152,9 @@ def webhook():
                 try:
                     api.submit_order(symbol=symbol, qty=qty, side="buy", type="limit",
                                    time_in_force="day", limit_price=limit_price, extended_hours=True)
-                    print(f"LIMIT BUY {qty} {symbol} @ {limit_price} (2%)", flush=True)
+                    print(f"LIMIT BUY {qty} {symbol} @ {limit_price}", flush=True)
                 except Exception as e:
                     print(f"Extended REJECTED: {e}", flush=True)
-
             return jsonify({"status": "entry_sent"}), 200
 
         if signal == "EXIT_LONG":
@@ -177,9 +164,9 @@ def webhook():
                 print(f"EXIT - No position in {symbol}", flush=True)
             return jsonify({"status": "exit_sent"}), 200
 
-        # TAKE PROFIT LOGIC
+        # TAKE PROFIT
         if qty_pos <= 0:
-            print(f"TP signal but no position in {symbol}", flush=True)
+            print(f"TP signal but no position", flush=True)
             return jsonify({"status": "no_position"}), 200
 
         qty = float(qty_pos)
@@ -191,7 +178,7 @@ def webhook():
 
         if sold > 0:
             sell_qty(symbol, sold)
-            print(f"✅ TP{signal[-1]}: Sold {sold}/{int(qty)} of {symbol}", flush=True)
+            print(f"✅ TP{signal[-1]}: Sold {sold} of {int(qty)} shares", flush=True)
         else:
             print(f"Ignored signal: {signal}", flush=True)
 
