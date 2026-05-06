@@ -14,7 +14,7 @@ api = tradeapi.REST(
 )
 
 DEFAULT_NOTIONAL = 7000
-EXTENDED_LIMIT_OFFSET = 0.03   # 3%
+EXTENDED_LIMIT_OFFSET = 0.02   # ← 2% (your preference zone)
 
 last_signal = {}
 
@@ -60,31 +60,21 @@ def close_position(symbol):
     except Exception as e:
         print("CLOSE ERROR:", str(e), flush=True)
 
-# =========================
-# FIXED NORMALIZER - Order Matters!
-# =========================
 def normalize_signal(raw):
-    if not raw: 
-        return ""
-    
+    if not raw: return ""
     s = str(raw).upper().strip()
     s = s.replace(" ", "").replace("-", "").replace("_", "").replace("|", "").replace(".", "")
     
     print(f"NORMALIZED: '{raw}' → '{s}'", flush=True)
 
-    # Check EXIT signals FIRST (most important fix)
     if any(x in s for x in ["EXITLONG", "CLOSELONG", "EXIT", "CLOSE", "SL", "BE"]):
         return "EXIT_LONG"
-    
-    # Then OPEN signals
     if any(x in s for x in ["LONG", "ENTRY", "OPENLONG"]):
         return "OPEN_LONG"
-    
     if "TP1" in s: return "TP1"
     if "TP2" in s: return "TP2"
     if "TP3" in s: return "TP3"
     if "TP4" in s: return "TP4"
-    
     return ""
 
 def already_fired(symbol, signal):
@@ -95,9 +85,6 @@ def already_fired(symbol, signal):
     last_signal[key] = now
     return False
 
-# =========================
-# WEBHOOK
-# =========================
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
@@ -142,10 +129,12 @@ def webhook():
             if qty_pos > 0:
                 return jsonify({"status": "already_in_position"}), 200
 
-            ask, _ = get_quote(symbol)
+            ask, bid = get_quote(symbol)
             qty = calc_qty(notional, ask)
             if qty <= 0:
                 return jsonify({"status": "qty_fail"}), 200
+
+            print(f"Quote → Ask: {ask} | Bid: {bid} | Spread: {ask-bid:.2f}", flush=True)
 
             if regular:
                 api.submit_order(symbol=symbol, qty=qty, side="buy", type="market", time_in_force="day")
@@ -157,7 +146,7 @@ def webhook():
                         symbol=symbol, qty=qty, side="buy", type="limit",
                         time_in_force="day", limit_price=limit_price, extended_hours=True
                     )
-                    print(f"LIMIT BUY {qty} {symbol} @ {limit_price} (Extended - 3%)", flush=True)
+                    print(f"LIMIT BUY {qty} {symbol} @ {limit_price} (Extended - 2%)", flush=True)
                 except Exception as e:
                     print(f"Extended order REJECTED: {e}", flush=True)
 
