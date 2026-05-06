@@ -14,7 +14,7 @@ api = tradeapi.REST(
 )
 
 DEFAULT_NOTIONAL = 7000
-EXTENDED_LIMIT_OFFSET = 0.02   # ← 2% (your preference zone)
+EXTENDED_LIMIT_OFFSET = 0.02
 
 last_signal = {}
 
@@ -64,7 +64,6 @@ def normalize_signal(raw):
     if not raw: return ""
     s = str(raw).upper().strip()
     s = s.replace(" ", "").replace("-", "").replace("_", "").replace("|", "").replace(".", "")
-    
     print(f"NORMALIZED: '{raw}' → '{s}'", flush=True)
 
     if any(x in s for x in ["EXITLONG", "CLOSELONG", "EXIT", "CLOSE", "SL", "BE"]):
@@ -77,37 +76,35 @@ def normalize_signal(raw):
     if "TP4" in s: return "TP4"
     return ""
 
-def already_fired(symbol, signal):
-    key = f"{symbol}:{signal}"
-    now = pytime.time()
-    if key in last_signal and now - last_signal[key] < 1.5:
-        return True
-    last_signal[key] = now
-    return False
-
+# =========================
+# WEBHOOK - IMPROVED
+# =========================
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
-        raw = request.get_data(as_text=False)
+        raw_bytes = request.get_data(as_text=False)
         print("=== RAW WEBHOOK RECEIVED ===", flush=True)
-        print(raw, flush=True)
+        print(raw_bytes, flush=True)
 
         data = None
         try:
             data = request.get_json(force=True, silent=True)
         except:
             pass
-        if not data and raw:
+
+        if not data and raw_bytes:
             try:
                 import json
-                data = json.loads(raw.decode('utf-8'))
+                data = json.loads(raw_bytes.decode('utf-8', errors='ignore'))
             except:
                 pass
 
         print("PARSED DATA:", data, flush=True)
 
         if not data:
-            return jsonify({"status": "no_data"}), 200
+            raw_text = raw_bytes.decode('utf-8', errors='ignore').strip() if raw_bytes else ""
+            print(f"RAW TEXT FALLBACK: {raw_text[:300]}", flush=True)
+            return jsonify({"status": "no_json"}), 200
 
         symbol = data.get("ticker") or data.get("symbol") or data.get("SYMBOL") or data.get("TICKER")
         raw_signal = data.get("signal")
@@ -119,7 +116,7 @@ def webhook():
         if not symbol or not signal:
             return jsonify({"status": "bad_payload"}), 200
 
-        if already_fired(symbol, signal):
+        if already_fired(symbol, signal):   # Note: function defined below
             return jsonify({"status": "duplicate"}), 200
 
         qty_pos = get_position(symbol)
@@ -127,6 +124,7 @@ def webhook():
 
         if signal == "OPEN_LONG":
             if qty_pos > 0:
+                print(f"Already in position for {symbol}", flush=True)
                 return jsonify({"status": "already_in_position"}), 200
 
             ask, bid = get_quote(symbol)
@@ -134,21 +132,19 @@ def webhook():
             if qty <= 0:
                 return jsonify({"status": "qty_fail"}), 200
 
-            print(f"Quote → Ask: {ask} | Bid: {bid} | Spread: {ask-bid:.2f}", flush=True)
+            print(f"Quote → Ask: {ask} | Bid: {bid}", flush=True)
 
             if regular:
                 api.submit_order(symbol=symbol, qty=qty, side="buy", type="market", time_in_force="day")
-                print(f"MARKET BUY {qty} {symbol} (Regular Hours)", flush=True)
+                print(f"MARKET BUY {qty} {symbol}", flush=True)
             else:
                 limit_price = round(ask * (1 + EXTENDED_LIMIT_OFFSET), 2)
                 try:
-                    api.submit_order(
-                        symbol=symbol, qty=qty, side="buy", type="limit",
-                        time_in_force="day", limit_price=limit_price, extended_hours=True
-                    )
-                    print(f"LIMIT BUY {qty} {symbol} @ {limit_price} (Extended - 2%)", flush=True)
+                    api.submit_order(symbol=symbol, qty=qty, side="buy", type="limit",
+                                   time_in_force="day", limit_price=limit_price, extended_hours=True)
+                    print(f"LIMIT BUY {qty} {symbol} @ {limit_price} (2%)", flush=True)
                 except Exception as e:
-                    print(f"Extended order REJECTED: {e}", flush=True)
+                    print(f"Extended REJECTED: {e}", flush=True)
 
             return jsonify({"status": "entry_sent"}), 200
 
@@ -156,23 +152,45 @@ def webhook():
             if qty_pos > 0:
                 close_position(symbol)
             else:
-                print(f"EXIT signal - No position in {symbol}", flush=True)
+                print(f"EXIT - No position in {symbol}", flush=True)
             return jsonify({"status": "exit_sent"}), 200
 
+        # TAKE PROFIT SECTION
         if qty_pos <= 0:
+            print(f"TP signal but no position in {symbol}", flush=True)
             return jsonify({"status": "no_position"}), 200
 
         qty = float(qty_pos)
-        if signal == "TP1": sell_qty(symbol, int(qty * 0.25))
-        elif signal == "TP2": sell_qty(symbol, int(qty * 0.20))
-        elif signal == "TP3": sell_qty(symbol, int(qty * 0.10))
-        elif signal == "TP4": sell_qty(symbol, int(qty * 0.10))
+        sold = 0
+        if signal == "TP1":
+            sold = int(qty * 0.25)
+        elif signal == "TP2":
+            sold = int(qty * 0.20)
+        elif signal == "TP3":
+            sold = int(qty * 0.10)
+        elif signal == "TP4":
+            sold = int(qty * 0.10)
 
-        return jsonify({"status": "processed"}), 200
+        if sold > 0:
+            sell_qty(symbol, sold)
+            print(f"TP{signal[-1]}: Sold {sold} of {symbol}", flush=True)
+        else:
+            print(f"Ignored signal: {signal}", flush=True)
+
+        return jsonify({"status": "tp_sent"}), 200
 
     except Exception as e:
         print("WEBHOOK ERROR:", str(e), flush=True)
         return jsonify({"status": "error"}), 200
+
+
+def already_fired(symbol, signal):
+    key = f"{symbol}:{signal}"
+    now = pytime.time()
+    if key in last_signal and now - last_signal[key] < 1.5:
+        return True
+    last_signal[key] = now
+    return False
 
 
 if __name__ == "__main__":
