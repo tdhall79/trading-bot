@@ -7,11 +7,10 @@ import time as pytime
 
 app = Flask(__name__)
 
-# ==================== PAPER TRADING ====================
 api = tradeapi.REST(
     os.getenv("APCA_API_KEY_ID"),
     os.getenv("APCA_API_SECRET_KEY"),
-    base_url="https://paper-api.alpaca.markets"   # ← PAPER ACCOUNT
+    base_url="https://paper-api.alpaca.markets"   # Change to live when ready
 )
 
 DEFAULT_NOTIONAL = 7000
@@ -49,8 +48,7 @@ def calc_qty(notional, price):
 
 def place_trailing_stop(symbol):
     qty = get_position(symbol)
-    if qty <= 0:
-        return
+    if qty <= 0: return
     try:
         api.submit_order(
             symbol=symbol,
@@ -60,7 +58,7 @@ def place_trailing_stop(symbol):
             time_in_force="day",
             trail_percent=TRAILING_STOP_PERCENT
         )
-        print(f"✅ PAPER TRAILING STOP {TRAILING_STOP_PERCENT}% placed for {symbol}", flush=True)
+        print(f"✅ ALPACA TRAILING STOP {TRAILING_STOP_PERCENT}% placed for {symbol}", flush=True)
     except Exception as e:
         print(f"Trailing stop failed: {e}", flush=True)
 
@@ -73,7 +71,7 @@ def sell_qty(symbol, qty, is_extended=False):
             if limit_price:
                 api.submit_order(symbol=symbol, qty=qty, side="sell", type="limit",
                                time_in_force="day", limit_price=limit_price, extended_hours=True)
-                print(f"LIMIT SELL {qty} {symbol} @ {limit_price} (Extended)", flush=True)
+                print(f"LIMIT SELL {qty} {symbol} @ {limit_price}", flush=True)
             else:
                 api.submit_order(symbol=symbol, qty=qty, side="sell", type="market", time_in_force="day")
                 print(f"MARKET SELL {qty} {symbol} (Ext fallback)", flush=True)
@@ -87,14 +85,18 @@ def close_position(symbol, is_extended=False):
     qty = get_position(symbol)
     if qty > 0:
         sell_qty(symbol, qty, is_extended)
+    else:
+        print(f"No position to close for {symbol}", flush=True)
 
 def normalize_signal(raw):
     if not raw: return ""
     s = str(raw).upper().strip().replace(" ", "").replace("-", "").replace("_", "").replace(".", "")
     print(f"NORMALIZED: '{raw}' → '{s}'", flush=True)
 
-    if any(x in s for x in ["EXITLONG", "CLOSELONG", "EXIT", "CLOSE", "SL", "BE"]):
+    # Treat all stop-related signals as EXIT_LONG
+    if any(x in s for x in ["EXITLONG", "CLOSELONG", "EXIT", "CLOSE", "SL", "BE", "TPSL", "TP_SL", "BREAKEVEN"]):
         return "EXIT_LONG"
+    
     if any(x in s for x in ["LONG", "ENTRY", "OPENLONG"]):
         return "OPEN_LONG"
     if "TP1" in s: return "TP1"
@@ -106,7 +108,7 @@ def normalize_signal(raw):
 def already_fired(symbol, signal):
     key = f"{symbol}:{signal}"
     now = pytime.time()
-    if key in last_signal and now - last_signal[key] < 1.5:
+    if key in last_signal and now - last_signal[key] < 2.0:
         return True
     last_signal[key] = now
     return False
@@ -136,14 +138,14 @@ def webhook():
             raw_text = raw_bytes.decode('utf-8', errors='ignore').strip()
             print(f"RAW TEXT: {raw_text}", flush=True)
             if "{{strategy.order.alert_message}}" in raw_text:
-                print("🚨 TEMPLATE RECEIVED", flush=True)
+                print("🚨 TEMPLATE RECEIVED - Close Long Command not firing", flush=True)
             return jsonify({"status": "no_data"}), 200
 
         symbol = data.get("ticker") or data.get("symbol")
         raw_signal = data.get("signal")
         signal = normalize_signal(raw_signal)
 
-        print(f"FINAL PARSED → {symbol} | {raw_signal} → {signal}", flush=True)
+        print(f"FINAL PARSED → {symbol} | Raw: {raw_signal} → {signal}", flush=True)
 
         if not symbol or not signal:
             return jsonify({"status": "bad_payload"}), 200
@@ -153,6 +155,7 @@ def webhook():
 
         qty_pos = get_position(symbol)
         extended = not is_regular_hours()
+        print(f"Current position in {symbol}: {qty_pos}", flush=True)
 
         if signal == "OPEN_LONG":
             if qty_pos > 0:
@@ -177,11 +180,12 @@ def webhook():
             return jsonify({"status": "entry_sent"}), 200
 
         if signal == "EXIT_LONG":
+            print(f"EXIT_LONG / SL / BE / TP SL received → Closing position", flush=True)
             close_position(symbol, extended)
             return jsonify({"status": "exit_sent"}), 200
 
         if qty_pos <= 0:
-            print(f"TP/SL ignored - No position", flush=True)
+            print(f"TP signal ignored - No position in {symbol}", flush=True)
             return jsonify({"status": "no_position"}), 200
 
         qty = float(qty_pos)
@@ -204,4 +208,4 @@ def webhook():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port, threaded=True)
