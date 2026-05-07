@@ -58,7 +58,7 @@ def place_trailing_stop(symbol):
             time_in_force="day",
             trail_percent=TRAILING_STOP_PERCENT
         )
-        print(f"✅ ALPACA TRAILING STOP {TRAILING_STOP_PERCENT}% placed for {symbol}", flush=True)
+        print(f"✅ TRAILING STOP {TRAILING_STOP_PERCENT}% placed for {symbol}", flush=True)
     except Exception as e:
         print(f"Trailing stop failed: {e}", flush=True)
 
@@ -74,7 +74,7 @@ def sell_qty(symbol, qty, is_extended=False):
                 print(f"LIMIT SELL {qty} {symbol} @ {limit_price}", flush=True)
             else:
                 api.submit_order(symbol=symbol, qty=qty, side="sell", type="market", time_in_force="day")
-                print(f"MARKET SELL {qty} {symbol} (Ext fallback)", flush=True)
+                print(f"MARKET SELL {qty} {symbol} (fallback)", flush=True)
         else:
             api.submit_order(symbol=symbol, qty=qty, side="sell", type="market", time_in_force="day")
             print(f"MARKET SELL {qty} {symbol}", flush=True)
@@ -88,21 +88,38 @@ def close_position(symbol, is_extended=False):
     else:
         print(f"No position to close for {symbol}", flush=True)
 
+# ===================== IMPROVED NORMALIZER =====================
 def normalize_signal(raw):
     if not raw: return ""
-    s = str(raw).upper().strip().replace(" ", "").replace("-", "").replace("_", "").replace(".", "")
-    print(f"NORMALIZED: '{raw}' → '{s}'", flush=True)
-
-    # Treat all stop-related signals as EXIT_LONG
-    if any(x in s for x in ["EXITLONG", "CLOSELONG", "EXIT", "CLOSE", "SL", "BE", "TPSL", "TP_SL", "BREAKEVEN"]):
-        return "EXIT_LONG"
+    s = str(raw).upper().strip()
+    print(f"RAW SIGNAL RECEIVED: '{raw}'", flush=True)
     
-    if any(x in s for x in ["LONG", "ENTRY", "OPENLONG"]):
+    # Remove separators
+    s_clean = s.replace(" ", "").replace("-", "").replace("_", "").replace(".", "")
+    
+    print(f"CLEANED: '{s_clean}'", flush=True)
+
+    if any(x in s_clean for x in ["EXITLONG", "CLOSELONG", "EXIT", "CLOSE"]):
+        return "EXIT_LONG"
+    if "SL" in s_clean or "BE" in s_clean or "BREAKEVEN" in s_clean:
+        return "EXIT_LONG"          # Catch BE SL, TP1 SL, regular SL, etc.
+    if "TP1" in s_clean and "SL" in s_clean:
+        return "EXIT_LONG"
+    if "TP2" in s_clean and "SL" in s_clean:
+        return "EXIT_LONG"
+    if "TP3" in s_clean and "SL" in s_clean:
+        return "EXIT_LONG"
+    if "TP4" in s_clean and "SL" in s_clean:
+        return "EXIT_LONG"
+
+    if "TP1" in s_clean: return "TP1"
+    if "TP2" in s_clean: return "TP2"
+    if "TP3" in s_clean: return "TP3"
+    if "TP4" in s_clean: return "TP4"
+
+    if any(x in s_clean for x in ["LONG", "ENTRY", "OPENLONG"]):
         return "OPEN_LONG"
-    if "TP1" in s: return "TP1"
-    if "TP2" in s: return "TP2"
-    if "TP3" in s: return "TP3"
-    if "TP4" in s: return "TP4"
+
     return ""
 
 def already_fired(symbol, signal):
@@ -138,14 +155,14 @@ def webhook():
             raw_text = raw_bytes.decode('utf-8', errors='ignore').strip()
             print(f"RAW TEXT: {raw_text}", flush=True)
             if "{{strategy.order.alert_message}}" in raw_text:
-                print("🚨 TEMPLATE RECEIVED - Close Long Command not firing", flush=True)
+                print("🚨 TEMPLATE RECEIVED", flush=True)
             return jsonify({"status": "no_data"}), 200
 
         symbol = data.get("ticker") or data.get("symbol")
         raw_signal = data.get("signal")
         signal = normalize_signal(raw_signal)
 
-        print(f"FINAL PARSED → {symbol} | Raw: {raw_signal} → {signal}", flush=True)
+        print(f"FINAL PARSED → {symbol} | Raw: '{raw_signal}' → {signal}", flush=True)
 
         if not symbol or not signal:
             return jsonify({"status": "bad_payload"}), 200
@@ -180,7 +197,7 @@ def webhook():
             return jsonify({"status": "entry_sent"}), 200
 
         if signal == "EXIT_LONG":
-            print(f"EXIT_LONG / SL / BE / TP SL received → Closing position", flush=True)
+            print(f"EXIT_LONG / SL / BE SL / TP SL received → Closing", flush=True)
             close_position(symbol, extended)
             return jsonify({"status": "exit_sent"}), 200
 
