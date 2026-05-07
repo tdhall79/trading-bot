@@ -52,11 +52,12 @@ def sell_qty(symbol, qty, is_extended=False):
             _, bid = get_quote(symbol)
             limit_price = round(bid * (1 - 0.005), 2) if bid > 0 else None
             if limit_price:
-                api.submit_order(symbol=symbol, qty=qty, side="sell", type="limit", time_in_force="day", limit_price=limit_price, extended_hours=True)
-                print(f"LIMIT SELL {qty} {symbol} @ {limit_price}", flush=True)
+                api.submit_order(symbol=symbol, qty=qty, side="sell", type="limit",
+                               time_in_force="day", limit_price=limit_price, extended_hours=True)
+                print(f"LIMIT SELL {qty} {symbol} @ {limit_price} (Extended)", flush=True)
             else:
                 api.submit_order(symbol=symbol, qty=qty, side="sell", type="market", time_in_force="day")
-                print(f"MARKET SELL {qty} {symbol} (fallback)", flush=True)
+                print(f"MARKET SELL {qty} {symbol} (Ext fallback)", flush=True)
         else:
             api.submit_order(symbol=symbol, qty=qty, side="sell", type="market", time_in_force="day")
             print(f"MARKET SELL {qty} {symbol}", flush=True)
@@ -115,18 +116,19 @@ def webhook():
 
         print("PARSED DATA:", data, flush=True)
 
+        # === STRONG TEMPLATE DETECTION ===
         if not data:
             raw_text = raw_bytes.decode('utf-8', errors='ignore').strip()
-            print(f"RAW TEXT: {raw_text[:400]}", flush=True)
+            print(f"RAW TEXT FALLBACK: {raw_text[:400]}", flush=True)
             if "{{strategy.order.alert_message}}" in raw_text:
-                print("❌ TEMPLATE STILL BEING SENT - Alert/Command box issue", flush=True)
+                print("🚨 TEMPLATE STILL BEING SENT - Alert issue persists", flush=True)
             return jsonify({"status": "no_data"}), 200
 
-        symbol = data.get("ticker") or data.get("symbol")
+        symbol = data.get("ticker") or data.get("symbol") or data.get("SYMBOL") or data.get("TICKER")
         raw_signal = data.get("signal")
         signal = normalize_signal(raw_signal)
 
-        print(f"FINAL PARSED → {symbol} | {raw_signal} → {signal}", flush=True)
+        print(f"FINAL PARSED → {symbol} | Raw: {raw_signal} → {signal}", flush=True)
 
         if not symbol or not signal:
             return jsonify({"status": "bad_payload"}), 200
@@ -140,6 +142,7 @@ def webhook():
         if signal == "OPEN_LONG":
             if qty_pos > 0:
                 return jsonify({"status": "already_in_position"}), 200
+
             ask, _ = get_quote(symbol)
             qty = calc_qty(DEFAULT_NOTIONAL, ask)
             if qty <= 0:
@@ -150,7 +153,8 @@ def webhook():
                 print(f"MARKET BUY {qty} {symbol}", flush=True)
             else:
                 limit_price = round(ask * (1 + EXTENDED_LIMIT_OFFSET), 2)
-                api.submit_order(symbol=symbol, qty=qty, side="buy", type="limit", time_in_force="day", limit_price=limit_price, extended_hours=True)
+                api.submit_order(symbol=symbol, qty=qty, side="buy", type="limit",
+                               time_in_force="day", limit_price=limit_price, extended_hours=True)
                 print(f"LIMIT BUY {qty} {symbol} @ {limit_price}", flush=True)
             return jsonify({"status": "entry_sent"}), 200
 
@@ -158,8 +162,9 @@ def webhook():
             close_position(symbol, extended)
             return jsonify({"status": "exit_sent"}), 200
 
+        # TAKE PROFIT
         if qty_pos <= 0:
-            print(f"TP/SL signal ignored - No position in {symbol}", flush=True)
+            print(f"TP signal ignored - No position in {symbol}", flush=True)
             return jsonify({"status": "no_position"}), 200
 
         qty = float(qty_pos)
@@ -171,7 +176,7 @@ def webhook():
 
         if sold > 0:
             sell_qty(symbol, sold, extended)
-            print(f"✅ TP{signal[-1]}: Sold {sold} of {int(qty)}", flush=True)
+            print(f"✅ TP{signal[-1]}: Sold {sold} of {int(qty)} shares", flush=True)
 
         return jsonify({"status": "processed"}), 200
 
