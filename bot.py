@@ -4,8 +4,13 @@ import os
 from datetime import datetime, time
 import pytz
 import time as pytime
+import json
 
 app = Flask(__name__)
+
+# =========================================================
+# ALPACA CONFIG
+# =========================================================
 
 api = tradeapi.REST(
     os.getenv("APCA_API_KEY_ID"),
@@ -13,20 +18,36 @@ api = tradeapi.REST(
     base_url="https://paper-api.alpaca.markets"   # Change to live when ready
 )
 
+# =========================================================
+# SETTINGS
+# =========================================================
+
 DEFAULT_NOTIONAL = 7000
 EXTENDED_LIMIT_OFFSET = 0.02
 TRAILING_STOP_PERCENT = 0.5
 
 last_signal = {}
 
+# =========================================================
+# HOME
+# =========================================================
+
 @app.route("/", methods=["GET"])
 def home():
     return "ALIVE", 200
+
+# =========================================================
+# MARKET HOURS
+# =========================================================
 
 def is_regular_hours():
     eastern = pytz.timezone("US/Eastern")
     now = datetime.now(eastern).time()
     return time(9, 30) <= now <= time(16, 0)
+
+# =========================================================
+# POSITION HELPERS
+# =========================================================
 
 def get_position(symbol):
     try:
@@ -43,13 +64,23 @@ def get_quote(symbol):
         return 0, 0
 
 def calc_qty(notional, price):
-    if price <= 0: return 0
+    if price <= 0:
+        return 0
     return int(notional / price)
 
+# =========================================================
+# TRAILING STOP
+# =========================================================
+
 def place_trailing_stop(symbol):
+
     qty = get_position(symbol)
-    if qty <= 0: return
+
+    if qty <= 0:
+        return
+
     try:
+
         api.submit_order(
             symbol=symbol,
             qty=qty,
@@ -58,171 +89,495 @@ def place_trailing_stop(symbol):
             time_in_force="day",
             trail_percent=TRAILING_STOP_PERCENT
         )
+
         print(f"✅ TRAILING STOP {TRAILING_STOP_PERCENT}% placed for {symbol}", flush=True)
+
     except Exception as e:
-        print(f"Trailing stop failed: {e}", flush=True)
+        print(f"TRAILING STOP ERROR: {e}", flush=True)
+
+# =========================================================
+# SELL HELPERS
+# =========================================================
 
 def sell_qty(symbol, qty, is_extended=False):
-    if qty <= 0: return
+
+    if qty <= 0:
+        return
+
     try:
+
         if is_extended:
+
             _, bid = get_quote(symbol)
+
             limit_price = round(bid * (1 - 0.008), 2) if bid > 0 else None
+
             if limit_price:
-                api.submit_order(symbol=symbol, qty=qty, side="sell", type="limit",
-                               time_in_force="day", limit_price=limit_price, extended_hours=True)
+
+                api.submit_order(
+                    symbol=symbol,
+                    qty=qty,
+                    side="sell",
+                    type="limit",
+                    time_in_force="day",
+                    limit_price=limit_price,
+                    extended_hours=True
+                )
+
                 print(f"LIMIT SELL {qty} {symbol} @ {limit_price}", flush=True)
+
             else:
-                api.submit_order(symbol=symbol, qty=qty, side="sell", type="market", time_in_force="day")
-                print(f"MARKET SELL {qty} {symbol} (fallback)", flush=True)
+
+                api.submit_order(
+                    symbol=symbol,
+                    qty=qty,
+                    side="sell",
+                    type="market",
+                    time_in_force="day"
+                )
+
+                print(f"MARKET SELL FALLBACK {qty} {symbol}", flush=True)
+
         else:
-            api.submit_order(symbol=symbol, qty=qty, side="sell", type="market", time_in_force="day")
+
+            api.submit_order(
+                symbol=symbol,
+                qty=qty,
+                side="sell",
+                type="market",
+                time_in_force="day"
+            )
+
             print(f"MARKET SELL {qty} {symbol}", flush=True)
+
     except Exception as e:
         print(f"SELL ERROR: {e}", flush=True)
 
 def close_position(symbol, is_extended=False):
+
     qty = get_position(symbol)
+
     if qty > 0:
+
         sell_qty(symbol, qty, is_extended)
+
     else:
-        print(f"No position to close for {symbol}", flush=True)
 
-# ===================== IMPROVED NORMALIZER =====================
+        print(f"NO POSITION TO CLOSE FOR {symbol}", flush=True)
+
+# =========================================================
+# SIGNAL NORMALIZER
+# =========================================================
+
 def normalize_signal(raw):
-    if not raw: return ""
+
+    if not raw:
+        return ""
+
     s = str(raw).upper().strip()
+
     print(f"RAW SIGNAL RECEIVED: '{raw}'", flush=True)
-    
-    # Remove separators
-    s_clean = s.replace(" ", "").replace("-", "").replace("_", "").replace(".", "")
-    
-    print(f"CLEANED: '{s_clean}'", flush=True)
 
-    if any(x in s_clean for x in ["EXITLONG", "CLOSELONG", "EXIT", "CLOSE"]):
-        return "EXIT_LONG"
-    if "SL" in s_clean or "BE" in s_clean or "BREAKEVEN" in s_clean:
-        return "EXIT_LONG"          # Catch BE SL, TP1 SL, regular SL, etc.
-    if "TP1" in s_clean and "SL" in s_clean:
-        return "EXIT_LONG"
-    if "TP2" in s_clean and "SL" in s_clean:
-        return "EXIT_LONG"
-    if "TP3" in s_clean and "SL" in s_clean:
-        return "EXIT_LONG"
-    if "TP4" in s_clean and "SL" in s_clean:
+    s_clean = (
+        s.replace(" ", "")
+         .replace("-", "")
+         .replace("_", "")
+         .replace(".", "")
+    )
+
+    print(f"CLEANED SIGNAL: '{s_clean}'", flush=True)
+
+    # =========================
+    # EXITS
+    # =========================
+
+    if any(x in s_clean for x in [
+        "EXITLONG",
+        "CLOSELONG",
+        "EXIT",
+        "CLOSE"
+    ]):
         return "EXIT_LONG"
 
-    if "TP1" in s_clean: return "TP1"
-    if "TP2" in s_clean: return "TP2"
-    if "TP3" in s_clean: return "TP3"
-    if "TP4" in s_clean: return "TP4"
+    if any(x in s_clean for x in [
+        "SL",
+        "BE",
+        "BREAKEVEN"
+    ]):
+        return "EXIT_LONG"
 
-    if any(x in s_clean for x in ["LONG", "ENTRY", "OPENLONG"]):
+    # =========================
+    # TAKE PROFITS
+    # =========================
+
+    if "TP1" in s_clean:
+        return "TP1"
+
+    if "TP2" in s_clean:
+        return "TP2"
+
+    if "TP3" in s_clean:
+        return "TP3"
+
+    if "TP4" in s_clean:
+        return "TP4"
+
+    # =========================
+    # ENTRIES
+    # =========================
+
+    if any(x in s_clean for x in [
+        "LONG",
+        "ENTRY",
+        "OPENLONG"
+    ]):
         return "OPEN_LONG"
 
     return ""
 
+# =========================================================
+# DUPLICATE FILTER
+# =========================================================
+
 def already_fired(symbol, signal):
+
     key = f"{symbol}:{signal}"
+
     now = pytime.time()
+
     if key in last_signal and now - last_signal[key] < 2.0:
         return True
+
     last_signal[key] = now
+
     return False
+
+# =========================================================
+# WEBHOOK
+# =========================================================
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
+
     try:
+
+        print("================================================", flush=True)
+        print("WEBHOOK RECEIVED", flush=True)
+
         raw_bytes = request.get_data(as_text=False)
-        print("=== RAW WEBHOOK RECEIVED ===", flush=True)
+
         print(raw_bytes, flush=True)
 
         data = None
+
+        # =================================================
+        # TRY NORMAL JSON PARSE
+        # =================================================
+
         try:
             data = request.get_json(force=True, silent=True)
         except:
             pass
+
+        # =================================================
+        # TRY MANUAL JSON PARSE
+        # =================================================
+
         if not data and raw_bytes:
+
             try:
-                import json
-                data = json.loads(raw_bytes.decode('utf-8', errors='ignore'))
+                data = json.loads(raw_bytes.decode("utf-8", errors="ignore"))
             except:
                 pass
 
-        print("PARSED DATA:", data, flush=True)
+        print(f"PARSED DATA: {data}", flush=True)
+
+        # =================================================
+        # RAW TEXT FALLBACK
+        # =================================================
 
         if not data:
-            raw_text = raw_bytes.decode('utf-8', errors='ignore').strip()
-            print(f"RAW TEXT: {raw_text}", flush=True)
-            if "{{strategy.order.alert_message}}" in raw_text:
-                print("🚨 TEMPLATE RECEIVED", flush=True)
-            return jsonify({"status": "no_data"}), 200
+
+            raw_text = raw_bytes.decode("utf-8", errors="ignore").strip()
+
+            print("===== RAW TEXT FALLBACK =====", flush=True)
+            print(f"RAW TEXT: '{raw_text}'", flush=True)
+
+            upper_raw = raw_text.upper()
+
+            # =============================================
+            # UNRESOLVED TV TEMPLATE
+            # =============================================
+
+            if "{{STRATEGY.ORDER.ALERT_MESSAGE}}" in upper_raw:
+
+                print("🚨 UNRESOLVED ALERT TEMPLATE DETECTED", flush=True)
+
+                try:
+
+                    positions = api.list_positions()
+
+                    if not positions:
+
+                        print("NO OPEN POSITIONS FOUND", flush=True)
+
+                        return jsonify({
+                            "status": "no_position"
+                        }), 200
+
+                    for pos in positions:
+
+                        symbol = pos.symbol
+                        qty = float(pos.qty)
+
+                        if qty > 0:
+
+                            print(f"FORCED EXIT FALLBACK FOR {symbol}", flush=True)
+
+                            extended = not is_regular_hours()
+
+                            close_position(symbol, extended)
+
+                    return jsonify({
+                        "status": "forced_exit"
+                    }), 200
+
+                except Exception as e:
+
+                    print(f"FALLBACK EXIT ERROR: {e}", flush=True)
+
+                    return jsonify({
+                        "status": "fallback_error"
+                    }), 200
+
+            # =============================================
+            # PLAIN TEXT EXIT FALLBACK
+            # =============================================
+
+            if any(x in upper_raw for x in [
+                "EXIT LONG",
+                "CLOSE LONG",
+                "STOP LOSS",
+                "SL",
+                "BE SL",
+                "BREAKEVEN"
+            ]):
+
+                print("🚨 RAW TEXT EXIT DETECTED", flush=True)
+
+                try:
+
+                    positions = api.list_positions()
+
+                    for pos in positions:
+
+                        symbol = pos.symbol
+                        qty = float(pos.qty)
+
+                        if qty > 0:
+
+                            print(f"CLOSING POSITION FOR {symbol}", flush=True)
+
+                            extended = not is_regular_hours()
+
+                            close_position(symbol, extended)
+
+                    return jsonify({
+                        "status": "raw_exit_processed"
+                    }), 200
+
+                except Exception as e:
+
+                    print(f"RAW EXIT ERROR: {e}", flush=True)
+
+                    return jsonify({
+                        "status": "raw_exit_error"
+                    }), 200
+
+            return jsonify({
+                "status": "no_data"
+            }), 200
+
+        # =================================================
+        # NORMAL JSON SIGNAL FLOW
+        # =================================================
 
         symbol = data.get("ticker") or data.get("symbol")
         raw_signal = data.get("signal")
+
         signal = normalize_signal(raw_signal)
 
-        print(f"FINAL PARSED → {symbol} | Raw: '{raw_signal}' → {signal}", flush=True)
+        print(f"FINAL PARSED → {symbol} | '{raw_signal}' → {signal}", flush=True)
 
         if not symbol or not signal:
-            return jsonify({"status": "bad_payload"}), 200
+
+            print("BAD PAYLOAD", flush=True)
+
+            return jsonify({
+                "status": "bad_payload"
+            }), 200
 
         if already_fired(symbol, signal):
-            return jsonify({"status": "duplicate"}), 200
+
+            print("DUPLICATE SIGNAL BLOCKED", flush=True)
+
+            return jsonify({
+                "status": "duplicate"
+            }), 200
 
         qty_pos = get_position(symbol)
+
         extended = not is_regular_hours()
-        print(f"Current position in {symbol}: {qty_pos}", flush=True)
+
+        print(f"CURRENT POSITION {symbol}: {qty_pos}", flush=True)
+
+        # =================================================
+        # OPEN LONG
+        # =================================================
 
         if signal == "OPEN_LONG":
+
             if qty_pos > 0:
-                return jsonify({"status": "already_in_position"}), 200
+
+                print("ALREADY IN POSITION", flush=True)
+
+                return jsonify({
+                    "status": "already_in_position"
+                }), 200
 
             ask, _ = get_quote(symbol)
+
             qty = calc_qty(DEFAULT_NOTIONAL, ask)
+
             if qty <= 0:
-                return jsonify({"status": "qty_fail"}), 200
+
+                print("QTY FAIL", flush=True)
+
+                return jsonify({
+                    "status": "qty_fail"
+                }), 200
+
+            # =============================================
+            # REGULAR HOURS BUY
+            # =============================================
 
             if not extended:
-                api.submit_order(symbol=symbol, qty=qty, side="buy", type="market", time_in_force="day")
+
+                api.submit_order(
+                    symbol=symbol,
+                    qty=qty,
+                    side="buy",
+                    type="market",
+                    time_in_force="day"
+                )
+
                 print(f"MARKET BUY {qty} {symbol}", flush=True)
+
+            # =============================================
+            # EXTENDED HOURS BUY
+            # =============================================
+
             else:
-                limit_price = round(ask * (1 + EXTENDED_LIMIT_OFFSET), 2)
-                api.submit_order(symbol=symbol, qty=qty, side="buy", type="limit",
-                               time_in_force="day", limit_price=limit_price, extended_hours=True)
+
+                limit_price = round(
+                    ask * (1 + EXTENDED_LIMIT_OFFSET),
+                    2
+                )
+
+                api.submit_order(
+                    symbol=symbol,
+                    qty=qty,
+                    side="buy",
+                    type="limit",
+                    time_in_force="day",
+                    limit_price=limit_price,
+                    extended_hours=True
+                )
+
                 print(f"LIMIT BUY {qty} {symbol} @ {limit_price}", flush=True)
 
             pytime.sleep(4)
+
             place_trailing_stop(symbol)
-            return jsonify({"status": "entry_sent"}), 200
+
+            return jsonify({
+                "status": "entry_sent"
+            }), 200
+
+        # =================================================
+        # EXIT LONG
+        # =================================================
 
         if signal == "EXIT_LONG":
-            print(f"EXIT_LONG / SL / BE SL / TP SL received → Closing", flush=True)
+
+            print("EXIT SIGNAL RECEIVED", flush=True)
+
             close_position(symbol, extended)
-            return jsonify({"status": "exit_sent"}), 200
+
+            return jsonify({
+                "status": "exit_sent"
+            }), 200
+
+        # =================================================
+        # TP WITHOUT POSITION
+        # =================================================
 
         if qty_pos <= 0:
-            print(f"TP signal ignored - No position in {symbol}", flush=True)
-            return jsonify({"status": "no_position"}), 200
+
+            print(f"TP IGNORED - NO POSITION IN {symbol}", flush=True)
+
+            return jsonify({
+                "status": "no_position"
+            }), 200
+
+        # =================================================
+        # TAKE PROFITS
+        # =================================================
 
         qty = float(qty_pos)
+
         sold = 0
-        if signal == "TP1": sold = int(qty * 0.25)
-        elif signal == "TP2": sold = int(qty * 0.20)
-        elif signal == "TP3": sold = int(qty * 0.10)
-        elif signal == "TP4": sold = int(qty * 0.10)
+
+        if signal == "TP1":
+            sold = int(qty * 0.25)
+
+        elif signal == "TP2":
+            sold = int(qty * 0.20)
+
+        elif signal == "TP3":
+            sold = int(qty * 0.10)
+
+        elif signal == "TP4":
+            sold = int(qty * 0.10)
 
         if sold > 0:
-            sell_qty(symbol, sold, extended)
-            print(f"✅ TP{signal[-1]}: Sold {sold} of {int(qty)}", flush=True)
 
-        return jsonify({"status": "processed"}), 200
+            sell_qty(symbol, sold, extended)
+
+            print(f"{signal}: SOLD {sold} OF {int(qty)}", flush=True)
+
+        return jsonify({
+            "status": "processed"
+        }), 200
 
     except Exception as e:
-        print("WEBHOOK ERROR:", str(e), flush=True)
-        return jsonify({"status": "error"}), 200
 
+        print("WEBHOOK ERROR:", str(e), flush=True)
+
+        return jsonify({
+            "status": "error"
+        }), 200
+
+# =========================================================
+# START
+# =========================================================
 
 if __name__ == "__main__":
+
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port, threaded=True)
+
+    app.run(
+        host="0.0.0.0",
+        port=port,
+        threaded=True
+    )
