@@ -15,7 +15,7 @@ app = Flask(__name__)
 api = tradeapi.REST(
     os.getenv("APCA_API_KEY_ID"),
     os.getenv("APCA_API_SECRET_KEY"),
-    base_url="https://paper-api.alpaca.markets"   # Change to live when ready
+    base_url="https://api.alpaca.markets"   # Change to live when ready
 )
 
 # =========================================================
