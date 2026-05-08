@@ -496,9 +496,7 @@ def webhook():
 
                 print(f"LIMIT BUY {qty} {symbol} @ {limit_price}", flush=True)
 
-            pytime.sleep(4)
-
-            place_trailing_stop(symbol)
+            
 
             return jsonify({
                 "status": "entry_sent"
