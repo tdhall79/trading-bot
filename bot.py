@@ -56,13 +56,47 @@ def get_position(symbol):
     except:
         return 0
 
-def get_quote(symbol):
-    try:
-        q = api.get_latest_quote(symbol)
-        return float(q.ap), float(q.bp)
-    except:
-        return 0, 0
 
+def get_quote(symbol):
+
+    try:
+
+        q = api.get_latest_quote(symbol)
+
+        ask = float(q.ap) if q.ap else 0
+        bid = float(q.bp) if q.bp else 0
+
+        # Fallback to latest trade if quote missing
+        if ask <= 0:
+
+            t = api.get_latest_trade(symbol)
+
+            ask = float(t.price)
+
+            print(f"USING TRADE PRICE FALLBACK FOR {symbol}: {ask}", flush=True)
+
+        return ask, bid
+
+    except Exception as e:
+
+        print(f"QUOTE ERROR: {e}", flush=True)
+
+        try:
+
+            t = api.get_latest_trade(symbol)
+
+            ask = float(t.price)
+
+            print(f"USING TRADE FALLBACK FOR {symbol}: {ask}", flush=True)
+
+            return ask, ask
+
+        except Exception as e2:
+
+            print(f"TRADE FALLBACK FAILED: {e2}", flush=True)
+
+            return 0, 0
+            
 def calc_qty(notional, price):
     if price <= 0:
         return 0
