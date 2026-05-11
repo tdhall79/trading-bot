@@ -73,14 +73,16 @@ def get_quote(symbol):
         ask = float(q.ap) if q.ap else 0
         bid = float(q.bp) if q.bp else 0
 
-        # FALLBACK TO TRADE PRICE
         if ask <= 0:
 
             t = api.get_latest_trade(symbol)
 
             ask = float(t.price)
 
-            print(f"USING TRADE PRICE FALLBACK FOR {symbol}: {ask}", flush=True)
+            print(
+                f"USING TRADE PRICE FALLBACK FOR {symbol}: {ask}",
+                flush=True
+            )
 
         return ask, bid
 
@@ -94,7 +96,10 @@ def get_quote(symbol):
 
             ask = float(t.price)
 
-            print(f"USING TRADE FALLBACK FOR {symbol}: {ask}", flush=True)
+            print(
+                f"USING TRADE FALLBACK FOR {symbol}: {ask}",
+                flush=True
+            )
 
             return ask, ask
 
@@ -110,37 +115,6 @@ def calc_qty(notional, price):
         return 0
 
     return int(notional / price)
-
-# =========================================================
-# TRAILING STOP
-# =========================================================
-
-def place_trailing_stop(symbol):
-
-    qty = get_position(symbol)
-
-    if qty <= 0:
-        return
-
-    try:
-
-        api.submit_order(
-            symbol=symbol,
-            qty=qty,
-            side="sell",
-            type="trailing_stop",
-            time_in_force="day",
-            trail_percent=TRAILING_STOP_PERCENT
-        )
-
-        print(
-            f"✅ TRAILING STOP {TRAILING_STOP_PERCENT}% placed for {symbol}",
-            flush=True
-        )
-
-    except Exception as e:
-
-        print(f"TRAILING STOP ERROR: {e}", flush=True)
 
 # =========================================================
 # SELL HELPERS
@@ -164,7 +138,7 @@ def sell_qty(symbol, qty, is_extended=False):
 
             if limit_price:
 
-                api.submit_order(
+                order = api.submit_order(
                     symbol=symbol,
                     qty=qty,
                     side="sell",
@@ -179,9 +153,14 @@ def sell_qty(symbol, qty, is_extended=False):
                     flush=True
                 )
 
+                print(
+                    f"SELL ORDER ID: {order.id}",
+                    flush=True
+                )
+
             else:
 
-                api.submit_order(
+                order = api.submit_order(
                     symbol=symbol,
                     qty=qty,
                     side="sell",
@@ -194,9 +173,14 @@ def sell_qty(symbol, qty, is_extended=False):
                     flush=True
                 )
 
+                print(
+                    f"SELL ORDER ID: {order.id}",
+                    flush=True
+                )
+
         else:
 
-            api.submit_order(
+            order = api.submit_order(
                 symbol=symbol,
                 qty=qty,
                 side="sell",
@@ -206,6 +190,11 @@ def sell_qty(symbol, qty, is_extended=False):
 
             print(
                 f"MARKET SELL {qty} {symbol}",
+                flush=True
+            )
+
+            print(
+                f"SELL ORDER ID: {order.id}",
                 flush=True
             )
 
@@ -223,7 +212,10 @@ def close_position(symbol, is_extended=False):
 
     else:
 
-        print(f"NO POSITION TO CLOSE FOR {symbol}", flush=True)
+        print(
+            f"NO POSITION TO CLOSE FOR {symbol}",
+            flush=True
+        )
 
 # =========================================================
 # SIGNAL NORMALIZER
@@ -371,7 +363,6 @@ def webhook():
                 errors="ignore"
             ).strip()
 
-            print("===== RAW TEXT FALLBACK =====", flush=True)
             print(f"RAW TEXT: '{raw_text}'", flush=True)
 
             return jsonify({
@@ -379,15 +370,11 @@ def webhook():
             }), 200
 
         # =================================================
-        # NORMAL SIGNAL FLOW
+        # PARSE SIGNAL
         # =================================================
 
         symbol = data.get("ticker") or data.get("symbol")
         raw_signal = data.get("signal")
-
-        # =================================================
-        # FIXED NOTIONAL HANDLING
-        # =================================================
 
         try:
 
@@ -406,7 +393,10 @@ def webhook():
             flush=True
         )
 
-        print(f"NOTIONAL RECEIVED: {notional}", flush=True)
+        print(
+            f"NOTIONAL RECEIVED: {notional}",
+            flush=True
+        )
 
         if not symbol or not signal:
 
@@ -469,18 +459,32 @@ def webhook():
 
             if not extended:
 
-                api.submit_order(
-                    symbol=symbol,
-                    qty=qty,
-                    side="buy",
-                    type="market",
-                    time_in_force="day"
-                )
+                try:
 
-                print(
-                    f"MARKET BUY {qty} {symbol}",
-                    flush=True
-                )
+                    order = api.submit_order(
+                        symbol=symbol,
+                        qty=qty,
+                        side="buy",
+                        type="market",
+                        time_in_force="day"
+                    )
+
+                    print(
+                        f"MARKET BUY {qty} {symbol}",
+                        flush=True
+                    )
+
+                    print(
+                        f"BUY ORDER ID: {order.id}",
+                        flush=True
+                    )
+
+                except Exception as e:
+
+                    print(
+                        f"BUY ORDER ERROR: {e}",
+                        flush=True
+                    )
 
             # =============================================
             # EXTENDED HOURS BUY
@@ -493,20 +497,34 @@ def webhook():
                     2
                 )
 
-                api.submit_order(
-                    symbol=symbol,
-                    qty=qty,
-                    side="buy",
-                    type="limit",
-                    time_in_force="day",
-                    limit_price=limit_price,
-                    extended_hours=True
-                )
+                try:
 
-                print(
-                    f"LIMIT BUY {qty} {symbol} @ {limit_price}",
-                    flush=True
-                )
+                    order = api.submit_order(
+                        symbol=symbol,
+                        qty=qty,
+                        side="buy",
+                        type="limit",
+                        time_in_force="day",
+                        limit_price=limit_price,
+                        extended_hours=True
+                    )
+
+                    print(
+                        f"LIMIT BUY {qty} {symbol} @ {limit_price}",
+                        flush=True
+                    )
+
+                    print(
+                        f"BUY ORDER ID: {order.id}",
+                        flush=True
+                    )
+
+                except Exception as e:
+
+                    print(
+                        f"BUY ORDER ERROR: {e}",
+                        flush=True
+                    )
 
             return jsonify({
                 "status": "entry_sent"
