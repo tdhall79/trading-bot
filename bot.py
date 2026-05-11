@@ -15,7 +15,7 @@ app = Flask(__name__)
 api = tradeapi.REST(
     os.getenv("APCA_API_KEY_ID"),
     os.getenv("APCA_API_SECRET_KEY"),
-    base_url="https://api.alpaca.markets"   # Change to live when ready
+    base_url="https://api.alpaca.markets"
 )
 
 # =========================================================
@@ -41,8 +41,11 @@ def home():
 # =========================================================
 
 def is_regular_hours():
+
     eastern = pytz.timezone("US/Eastern")
+
     now = datetime.now(eastern).time()
+
     return time(9, 30) <= now <= time(16, 0)
 
 # =========================================================
@@ -50,12 +53,16 @@ def is_regular_hours():
 # =========================================================
 
 def get_position(symbol):
-    try:
-        pos = api.get_position(symbol)
-        return float(pos.qty)
-    except:
-        return 0
 
+    try:
+
+        pos = api.get_position(symbol)
+
+        return float(pos.qty)
+
+    except:
+
+        return 0
 
 def get_quote(symbol):
 
@@ -66,7 +73,7 @@ def get_quote(symbol):
         ask = float(q.ap) if q.ap else 0
         bid = float(q.bp) if q.bp else 0
 
-        # Fallback to latest trade if quote missing
+        # FALLBACK TO TRADE PRICE
         if ask <= 0:
 
             t = api.get_latest_trade(symbol)
@@ -96,10 +103,12 @@ def get_quote(symbol):
             print(f"TRADE FALLBACK FAILED: {e2}", flush=True)
 
             return 0, 0
-            
+
 def calc_qty(notional, price):
+
     if price <= 0:
         return 0
+
     return int(notional / price)
 
 # =========================================================
@@ -124,9 +133,13 @@ def place_trailing_stop(symbol):
             trail_percent=TRAILING_STOP_PERCENT
         )
 
-        print(f"✅ TRAILING STOP {TRAILING_STOP_PERCENT}% placed for {symbol}", flush=True)
+        print(
+            f"✅ TRAILING STOP {TRAILING_STOP_PERCENT}% placed for {symbol}",
+            flush=True
+        )
 
     except Exception as e:
+
         print(f"TRAILING STOP ERROR: {e}", flush=True)
 
 # =========================================================
@@ -144,7 +157,10 @@ def sell_qty(symbol, qty, is_extended=False):
 
             _, bid = get_quote(symbol)
 
-            limit_price = round(bid * (1 - 0.008), 2) if bid > 0 else None
+            limit_price = round(
+                bid * (1 - 0.008),
+                2
+            ) if bid > 0 else None
 
             if limit_price:
 
@@ -158,7 +174,10 @@ def sell_qty(symbol, qty, is_extended=False):
                     extended_hours=True
                 )
 
-                print(f"LIMIT SELL {qty} {symbol} @ {limit_price}", flush=True)
+                print(
+                    f"LIMIT SELL {qty} {symbol} @ {limit_price}",
+                    flush=True
+                )
 
             else:
 
@@ -170,7 +189,10 @@ def sell_qty(symbol, qty, is_extended=False):
                     time_in_force="day"
                 )
 
-                print(f"MARKET SELL FALLBACK {qty} {symbol}", flush=True)
+                print(
+                    f"MARKET SELL FALLBACK {qty} {symbol}",
+                    flush=True
+                )
 
         else:
 
@@ -182,9 +204,13 @@ def sell_qty(symbol, qty, is_extended=False):
                 time_in_force="day"
             )
 
-            print(f"MARKET SELL {qty} {symbol}", flush=True)
+            print(
+                f"MARKET SELL {qty} {symbol}",
+                flush=True
+            )
 
     except Exception as e:
+
         print(f"SELL ERROR: {e}", flush=True)
 
 def close_position(symbol, is_extended=False):
@@ -221,9 +247,9 @@ def normalize_signal(raw):
 
     print(f"CLEANED SIGNAL: '{s_clean}'", flush=True)
 
-    # =========================
+    # =====================================================
     # EXITS
-    # =========================
+    # =====================================================
 
     if any(x in s_clean for x in [
         "EXITLONG",
@@ -240,9 +266,9 @@ def normalize_signal(raw):
     ]):
         return "EXIT_LONG"
 
-    # =========================
+    # =====================================================
     # TAKE PROFITS
-    # =========================
+    # =====================================================
 
     if "TP1" in s_clean:
         return "TP1"
@@ -256,9 +282,9 @@ def normalize_signal(raw):
     if "TP4" in s_clean:
         return "TP4"
 
-    # =========================
+    # =====================================================
     # ENTRIES
-    # =========================
+    # =====================================================
 
     if any(x in s_clean for x in [
         "LONG",
@@ -305,23 +331,31 @@ def webhook():
         data = None
 
         # =================================================
-        # TRY NORMAL JSON PARSE
+        # NORMAL JSON PARSE
         # =================================================
 
         try:
+
             data = request.get_json(force=True, silent=True)
+
         except:
+
             pass
 
         # =================================================
-        # TRY MANUAL JSON PARSE
+        # MANUAL JSON PARSE
         # =================================================
 
         if not data and raw_bytes:
 
             try:
-                data = json.loads(raw_bytes.decode("utf-8", errors="ignore"))
+
+                data = json.loads(
+                    raw_bytes.decode("utf-8", errors="ignore")
+                )
+
             except:
+
                 pass
 
         print(f"PARSED DATA: {data}", flush=True)
@@ -332,116 +366,47 @@ def webhook():
 
         if not data:
 
-            raw_text = raw_bytes.decode("utf-8", errors="ignore").strip()
+            raw_text = raw_bytes.decode(
+                "utf-8",
+                errors="ignore"
+            ).strip()
 
             print("===== RAW TEXT FALLBACK =====", flush=True)
             print(f"RAW TEXT: '{raw_text}'", flush=True)
-
-            upper_raw = raw_text.upper()
-
-            # =============================================
-            # UNRESOLVED TV TEMPLATE
-            # =============================================
-
-            if "{{STRATEGY.ORDER.ALERT_MESSAGE}}" in upper_raw:
-
-                print("🚨 UNRESOLVED ALERT TEMPLATE DETECTED", flush=True)
-
-                try:
-
-                    positions = api.list_positions()
-
-                    if not positions:
-
-                        print("NO OPEN POSITIONS FOUND", flush=True)
-
-                        return jsonify({
-                            "status": "no_position"
-                        }), 200
-
-                    for pos in positions:
-
-                        symbol = pos.symbol
-                        qty = float(pos.qty)
-
-                        if qty > 0:
-
-                            print(f"FORCED EXIT FALLBACK FOR {symbol}", flush=True)
-
-                            extended = not is_regular_hours()
-
-                            close_position(symbol, extended)
-
-                    return jsonify({
-                        "status": "forced_exit"
-                    }), 200
-
-                except Exception as e:
-
-                    print(f"FALLBACK EXIT ERROR: {e}", flush=True)
-
-                    return jsonify({
-                        "status": "fallback_error"
-                    }), 200
-
-            # =============================================
-            # PLAIN TEXT EXIT FALLBACK
-            # =============================================
-
-            if any(x in upper_raw for x in [
-                "EXIT LONG",
-                "CLOSE LONG",
-                "STOP LOSS",
-                "SL",
-                "BE SL",
-                "BREAKEVEN"
-            ]):
-
-                print("🚨 RAW TEXT EXIT DETECTED", flush=True)
-
-                try:
-
-                    positions = api.list_positions()
-
-                    for pos in positions:
-
-                        symbol = pos.symbol
-                        qty = float(pos.qty)
-
-                        if qty > 0:
-
-                            print(f"CLOSING POSITION FOR {symbol}", flush=True)
-
-                            extended = not is_regular_hours()
-
-                            close_position(symbol, extended)
-
-                    return jsonify({
-                        "status": "raw_exit_processed"
-                    }), 200
-
-                except Exception as e:
-
-                    print(f"RAW EXIT ERROR: {e}", flush=True)
-
-                    return jsonify({
-                        "status": "raw_exit_error"
-                    }), 200
 
             return jsonify({
                 "status": "no_data"
             }), 200
 
         # =================================================
-        # NORMAL JSON SIGNAL FLOW
+        # NORMAL SIGNAL FLOW
         # =================================================
 
         symbol = data.get("ticker") or data.get("symbol")
         raw_signal = data.get("signal")
 
+        # =================================================
+        # FIXED NOTIONAL HANDLING
+        # =================================================
+
+        try:
+
+            notional = float(
+                data.get("notional", DEFAULT_NOTIONAL)
+            )
+
+        except:
+
+            notional = DEFAULT_NOTIONAL
+
         signal = normalize_signal(raw_signal)
 
-        print(f"FINAL PARSED → {symbol} | '{raw_signal}' → {signal}", flush=True)
+        print(
+            f"FINAL PARSED → {symbol} | '{raw_signal}' → {signal}",
+            flush=True
+        )
+
+        print(f"NOTIONAL RECEIVED: {notional}", flush=True)
 
         if not symbol or not signal:
 
@@ -463,7 +428,10 @@ def webhook():
 
         extended = not is_regular_hours()
 
-        print(f"CURRENT POSITION {symbol}: {qty_pos}", flush=True)
+        print(
+            f"CURRENT POSITION {symbol}: {qty_pos}",
+            flush=True
+        )
 
         # =================================================
         # OPEN LONG
@@ -481,7 +449,11 @@ def webhook():
 
             ask, _ = get_quote(symbol)
 
-            qty = calc_qty(DEFAULT_NOTIONAL, ask)
+            qty = calc_qty(notional, ask)
+
+            print(f"ASK: {ask}", flush=True)
+            print(f"QTY: {qty}", flush=True)
+            print(f"EST VALUE: {qty * ask}", flush=True)
 
             if qty <= 0:
 
@@ -505,7 +477,10 @@ def webhook():
                     time_in_force="day"
                 )
 
-                print(f"MARKET BUY {qty} {symbol}", flush=True)
+                print(
+                    f"MARKET BUY {qty} {symbol}",
+                    flush=True
+                )
 
             # =============================================
             # EXTENDED HOURS BUY
@@ -528,9 +503,10 @@ def webhook():
                     extended_hours=True
                 )
 
-                print(f"LIMIT BUY {qty} {symbol} @ {limit_price}", flush=True)
-
-            
+                print(
+                    f"LIMIT BUY {qty} {symbol} @ {limit_price}",
+                    flush=True
+                )
 
             return jsonify({
                 "status": "entry_sent"
@@ -556,7 +532,10 @@ def webhook():
 
         if qty_pos <= 0:
 
-            print(f"TP IGNORED - NO POSITION IN {symbol}", flush=True)
+            print(
+                f"TP IGNORED - NO POSITION IN {symbol}",
+                flush=True
+            )
 
             return jsonify({
                 "status": "no_position"
@@ -586,7 +565,10 @@ def webhook():
 
             sell_qty(symbol, sold, extended)
 
-            print(f"{signal}: SOLD {sold} OF {int(qty)}", flush=True)
+            print(
+                f"{signal}: SOLD {sold} OF {int(qty)}",
+                flush=True
+            )
 
         return jsonify({
             "status": "processed"
@@ -594,7 +576,7 @@ def webhook():
 
     except Exception as e:
 
-        print("WEBHOOK ERROR:", str(e), flush=True)
+        print(f"WEBHOOK ERROR: {e}", flush=True)
 
         return jsonify({
             "status": "error"
@@ -613,4 +595,3 @@ if __name__ == "__main__":
         port=port,
         threaded=True
     )
-       
