@@ -127,14 +127,53 @@ def sell_qty(symbol, qty, is_extended=False):
 
     try:
 
+        # =================================================
+        # EXTENDED HOURS SELL
+        # =================================================
+
         if is_extended:
 
-            _, bid = get_quote(symbol)
+            # =============================================
+            # USE LATEST TRADE PRICE
+            # =============================================
+
+            try:
+
+                trade = api.get_latest_trade(symbol)
+
+                last_price = float(trade.price)
+
+                print(
+                    f"LATEST TRADE PRICE FOR {symbol}: {last_price}",
+                    flush=True
+                )
+
+            except Exception as e:
+
+                print(
+                    f"TRADE PRICE ERROR: {e}",
+                    flush=True
+                )
+
+                last_price = 0
+
+            # =============================================
+            # AGGRESSIVE EXTENDED LIMIT
+            # =============================================
 
             limit_price = round(
-                bid * (1 - 0.008),
+                last_price * 0.995,
                 2
-            ) if bid > 0 else None
+            ) if last_price > 0 else None
+
+            print(
+                f"EXTENDED LIMIT SELL PRICE: {limit_price}",
+                flush=True
+            )
+
+            # =============================================
+            # LIMIT SELL
+            # =============================================
 
             if limit_price:
 
@@ -158,6 +197,10 @@ def sell_qty(symbol, qty, is_extended=False):
                     flush=True
                 )
 
+            # =============================================
+            # FALLBACK MARKET SELL
+            # =============================================
+
             else:
 
                 order = api.submit_order(
@@ -177,6 +220,10 @@ def sell_qty(symbol, qty, is_extended=False):
                     f"SELL ORDER ID: {order.id}",
                     flush=True
                 )
+
+        # =================================================
+        # REGULAR HOURS SELL
+        # =================================================
 
         else:
 
@@ -322,10 +369,6 @@ def webhook():
 
         data = None
 
-        # =================================================
-        # NORMAL JSON PARSE
-        # =================================================
-
         try:
 
             data = request.get_json(force=True, silent=True)
@@ -333,10 +376,6 @@ def webhook():
         except:
 
             pass
-
-        # =================================================
-        # MANUAL JSON PARSE
-        # =================================================
 
         if not data and raw_bytes:
 
@@ -352,26 +391,11 @@ def webhook():
 
         print(f"PARSED DATA: {data}", flush=True)
 
-        # =================================================
-        # RAW TEXT FALLBACK
-        # =================================================
-
         if not data:
-
-            raw_text = raw_bytes.decode(
-                "utf-8",
-                errors="ignore"
-            ).strip()
-
-            print(f"RAW TEXT: '{raw_text}'", flush=True)
 
             return jsonify({
                 "status": "no_data"
             }), 200
-
-        # =================================================
-        # PARSE SIGNAL
-        # =================================================
 
         symbol = data.get("ticker") or data.get("symbol")
         raw_signal = data.get("signal")
@@ -400,15 +424,11 @@ def webhook():
 
         if not symbol or not signal:
 
-            print("BAD PAYLOAD", flush=True)
-
             return jsonify({
                 "status": "bad_payload"
             }), 200
 
         if already_fired(symbol, signal):
-
-            print("DUPLICATE SIGNAL BLOCKED", flush=True)
 
             return jsonify({
                 "status": "duplicate"
@@ -431,8 +451,6 @@ def webhook():
 
             if qty_pos > 0:
 
-                print("ALREADY IN POSITION", flush=True)
-
                 return jsonify({
                     "status": "already_in_position"
                 }), 200
@@ -446,8 +464,6 @@ def webhook():
             print(f"EST VALUE: {qty * ask}", flush=True)
 
             if qty <= 0:
-
-                print("QTY FAIL", flush=True)
 
                 return jsonify({
                     "status": "qty_fail"
@@ -549,11 +565,6 @@ def webhook():
         # =================================================
 
         if qty_pos <= 0:
-
-            print(
-                f"TP IGNORED - NO POSITION IN {symbol}",
-                flush=True
-            )
 
             return jsonify({
                 "status": "no_position"
