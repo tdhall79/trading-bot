@@ -22,7 +22,7 @@ api = tradeapi.REST(
 # SETTINGS
 # =========================================================
 
-DEFAULT_NOTIONAL = 7000
+DEFAULT_NOTIONAL = 3500
 EXTENDED_LIMIT_OFFSET = 0.02
 TRAILING_STOP_PERCENT = 0.5
 
