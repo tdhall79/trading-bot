@@ -23,7 +23,6 @@ api = tradeapi.REST(
 # =========================================================
 
 DEFAULT_NOTIONAL = 3500
-EXTENDED_LIMIT_OFFSET = 0.02
 TRAILING_STOP_PERCENT = 0.5
 
 last_signal = {}
@@ -68,21 +67,10 @@ def get_quote(symbol):
 
     try:
 
-        q = api.get_latest_quote(symbol)
+        quote = api.get_latest_quote(symbol)
 
-        ask = float(q.ap) if q.ap else 0
-        bid = float(q.bp) if q.bp else 0
-
-        if ask <= 0:
-
-            t = api.get_latest_trade(symbol)
-
-            ask = float(t.price)
-
-            print(
-                f"USING TRADE PRICE FALLBACK FOR {symbol}: {ask}",
-                flush=True
-            )
+        ask = float(quote.ap) if quote.ap else 0
+        bid = float(quote.bp) if quote.bp else 0
 
         return ask, bid
 
@@ -90,24 +78,21 @@ def get_quote(symbol):
 
         print(f"QUOTE ERROR: {e}", flush=True)
 
-        try:
+        return 0, 0
 
-            t = api.get_latest_trade(symbol)
+def get_trade_price(symbol):
 
-            ask = float(t.price)
+    try:
 
-            print(
-                f"USING TRADE FALLBACK FOR {symbol}: {ask}",
-                flush=True
-            )
+        trade = api.get_latest_trade(symbol)
 
-            return ask, ask
+        return float(trade.price)
 
-        except Exception as e2:
+    except Exception as e:
 
-            print(f"TRADE FALLBACK FAILED: {e2}", flush=True)
+        print(f"TRADE ERROR: {e}", flush=True)
 
-            return 0, 0
+        return 0
 
 def calc_qty(notional, price):
 
@@ -115,6 +100,116 @@ def calc_qty(notional, price):
         return 0
 
     return int(notional / price)
+
+# =========================================================
+# EXTENDED HOURS BUY LIMIT
+# =========================================================
+
+def get_extended_buy_limit(symbol):
+
+    try:
+
+        quote = api.get_latest_quote(symbol)
+        trade = api.get_latest_trade(symbol)
+
+        ask = float(quote.ap) if quote.ap else 0
+        bid = float(quote.bp) if quote.bp else 0
+        last = float(trade.price) if trade.price else 0
+
+        print(f"BUY ASK: {ask}", flush=True)
+        print(f"BUY BID: {bid}", flush=True)
+        print(f"BUY LAST: {last}", flush=True)
+
+        prices = [p for p in [ask, bid, last] if p > 0]
+
+        if not prices:
+            return None
+
+        # =================================================
+        # USE MEDIAN PRICE
+        # =================================================
+
+        prices.sort()
+
+        reference_price = prices[len(prices) // 2]
+
+        print(
+            f"BUY REFERENCE PRICE: {reference_price}",
+            flush=True
+        )
+
+        limit_price = round(
+            reference_price * 1.01,
+            2
+        )
+
+        print(
+            f"FINAL BUY LIMIT: {limit_price}",
+            flush=True
+        )
+
+        return limit_price
+
+    except Exception as e:
+
+        print(f"BUY LIMIT ERROR: {e}", flush=True)
+
+        return None
+
+# =========================================================
+# EXTENDED HOURS SELL LIMIT
+# =========================================================
+
+def get_extended_sell_limit(symbol):
+
+    try:
+
+        quote = api.get_latest_quote(symbol)
+        trade = api.get_latest_trade(symbol)
+
+        ask = float(quote.ap) if quote.ap else 0
+        bid = float(quote.bp) if quote.bp else 0
+        last = float(trade.price) if trade.price else 0
+
+        print(f"SELL ASK: {ask}", flush=True)
+        print(f"SELL BID: {bid}", flush=True)
+        print(f"SELL LAST: {last}", flush=True)
+
+        prices = [p for p in [ask, bid, last] if p > 0]
+
+        if not prices:
+            return None
+
+        # =================================================
+        # USE MEDIAN PRICE
+        # =================================================
+
+        prices.sort()
+
+        reference_price = prices[len(prices) // 2]
+
+        print(
+            f"SELL REFERENCE PRICE: {reference_price}",
+            flush=True
+        )
+
+        limit_price = round(
+            reference_price * 0.995,
+            2
+        )
+
+        print(
+            f"FINAL SELL LIMIT: {limit_price}",
+            flush=True
+        )
+
+        return limit_price
+
+    except Exception as e:
+
+        print(f"SELL LIMIT ERROR: {e}", flush=True)
+
+        return None
 
 # =========================================================
 # SELL HELPERS
@@ -133,93 +228,36 @@ def sell_qty(symbol, qty, is_extended=False):
 
         if is_extended:
 
-            # =============================================
-            # USE LATEST TRADE PRICE
-            # =============================================
+            limit_price = get_extended_sell_limit(symbol)
 
-            try:
-
-                trade = api.get_latest_trade(symbol)
-
-                last_price = float(trade.price)
+            if not limit_price:
 
                 print(
-                    f"LATEST TRADE PRICE FOR {symbol}: {last_price}",
+                    "FAILED TO BUILD SELL LIMIT",
                     flush=True
                 )
 
-            except Exception as e:
+                return
 
-                print(
-                    f"TRADE PRICE ERROR: {e}",
-                    flush=True
-                )
-
-                last_price = 0
-
-            # =============================================
-            # AGGRESSIVE EXTENDED LIMIT
-            # =============================================
-
-            limit_price = round(
-                last_price * 0.995,
-                2
-            ) if last_price > 0 else None
+            order = api.submit_order(
+                symbol=symbol,
+                qty=qty,
+                side="sell",
+                type="limit",
+                time_in_force="day",
+                limit_price=limit_price,
+                extended_hours=True
+            )
 
             print(
-                f"EXTENDED LIMIT SELL PRICE: {limit_price}",
+                f"LIMIT SELL {qty} {symbol} @ {limit_price}",
                 flush=True
             )
 
-            # =============================================
-            # LIMIT SELL
-            # =============================================
-
-            if limit_price:
-
-                order = api.submit_order(
-                    symbol=symbol,
-                    qty=qty,
-                    side="sell",
-                    type="limit",
-                    time_in_force="day",
-                    limit_price=limit_price,
-                    extended_hours=True
-                )
-
-                print(
-                    f"LIMIT SELL {qty} {symbol} @ {limit_price}",
-                    flush=True
-                )
-
-                print(
-                    f"SELL ORDER ID: {order.id}",
-                    flush=True
-                )
-
-            # =============================================
-            # FALLBACK MARKET SELL
-            # =============================================
-
-            else:
-
-                order = api.submit_order(
-                    symbol=symbol,
-                    qty=qty,
-                    side="sell",
-                    type="market",
-                    time_in_force="day"
-                )
-
-                print(
-                    f"MARKET SELL FALLBACK {qty} {symbol}",
-                    flush=True
-                )
-
-                print(
-                    f"SELL ORDER ID: {order.id}",
-                    flush=True
-                )
+            print(
+                f"SELL ORDER ID: {order.id}",
+                flush=True
+            )
 
         # =================================================
         # REGULAR HOURS SELL
@@ -248,6 +286,10 @@ def sell_qty(symbol, qty, is_extended=False):
     except Exception as e:
 
         print(f"SELL ERROR: {e}", flush=True)
+
+# =========================================================
+# CLOSE POSITION
+# =========================================================
 
 def close_position(symbol, is_extended=False):
 
@@ -294,11 +336,7 @@ def normalize_signal(raw):
         "EXITLONG",
         "CLOSELONG",
         "EXIT",
-        "CLOSE"
-    ]):
-        return "EXIT_LONG"
-
-    if any(x in s_clean for x in [
+        "CLOSE",
         "SL",
         "BE",
         "BREAKEVEN"
@@ -344,7 +382,7 @@ def already_fired(symbol, signal):
 
     now = pytime.time()
 
-    if key in last_signal and now - last_signal[key] < 2.0:
+    if key in last_signal and now - last_signal[key] < 2:
         return True
 
     last_signal[key] = now
@@ -455,13 +493,13 @@ def webhook():
                     "status": "already_in_position"
                 }), 200
 
-            ask, _ = get_quote(symbol)
+            last_price = get_trade_price(symbol)
 
-            qty = calc_qty(notional, ask)
+            qty = calc_qty(notional, last_price)
 
-            print(f"ASK: {ask}", flush=True)
+            print(f"LAST PRICE: {last_price}", flush=True)
             print(f"QTY: {qty}", flush=True)
-            print(f"EST VALUE: {qty * ask}", flush=True)
+            print(f"EST VALUE: {qty * last_price}", flush=True)
 
             if qty <= 0:
 
@@ -508,10 +546,13 @@ def webhook():
 
             else:
 
-                limit_price = round(
-                    ask * (1 + EXTENDED_LIMIT_OFFSET),
-                    2
-                )
+                limit_price = get_extended_buy_limit(symbol)
+
+                if not limit_price:
+
+                    return jsonify({
+                        "status": "bad_limit_price"
+                    }), 200
 
                 try:
 
