@@ -110,36 +110,21 @@ def get_extended_buy_limit(symbol):
     try:
 
         quote = api.get_latest_quote(symbol)
-        trade = api.get_latest_trade(symbol)
 
         ask = float(quote.ap) if quote.ap else 0
-        bid = float(quote.bp) if quote.bp else 0
-        last = float(trade.price) if trade.price else 0
 
         print(f"BUY ASK: {ask}", flush=True)
-        print(f"BUY BID: {bid}", flush=True)
-        print(f"BUY LAST: {last}", flush=True)
 
-        prices = [p for p in [ask, bid, last] if p > 0]
+        if ask <= 0:
 
-        if not prices:
             return None
 
         # =================================================
-        # USE MEDIAN PRICE
+        # AGGRESSIVE PREMARKET BUY
         # =================================================
 
-        prices.sort()
-
-        reference_price = prices[len(prices) // 2]
-
-        print(
-            f"BUY REFERENCE PRICE: {reference_price}",
-            flush=True
-        )
-
         limit_price = round(
-            reference_price * 1.01,
+            ask * 1.03,
             2
         )
 
@@ -165,36 +150,21 @@ def get_extended_sell_limit(symbol):
     try:
 
         quote = api.get_latest_quote(symbol)
-        trade = api.get_latest_trade(symbol)
 
-        ask = float(quote.ap) if quote.ap else 0
         bid = float(quote.bp) if quote.bp else 0
-        last = float(trade.price) if trade.price else 0
 
-        print(f"SELL ASK: {ask}", flush=True)
         print(f"SELL BID: {bid}", flush=True)
-        print(f"SELL LAST: {last}", flush=True)
 
-        prices = [p for p in [ask, bid, last] if p > 0]
+        if bid <= 0:
 
-        if not prices:
             return None
 
         # =================================================
-        # USE MEDIAN PRICE
+        # AGGRESSIVE PREMARKET SELL
         # =================================================
 
-        prices.sort()
-
-        reference_price = prices[len(prices) // 2]
-
-        print(
-            f"SELL REFERENCE PRICE: {reference_price}",
-            flush=True
-        )
-
         limit_price = round(
-            reference_price * 0.995,
+            bid * 0.99,
             2
         )
 
