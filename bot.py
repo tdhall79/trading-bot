@@ -23,7 +23,6 @@ api = tradeapi.REST(
 # =========================================================
 
 DEFAULT_NOTIONAL = 3500
-TRAILING_STOP_PERCENT = 0.5
 
 last_signal = {}
 
@@ -33,6 +32,7 @@ last_signal = {}
 
 @app.route("/", methods=["GET"])
 def home():
+
     return "ALIVE", 200
 
 # =========================================================
@@ -63,23 +63,6 @@ def get_position(symbol):
 
         return 0
 
-def get_quote(symbol):
-
-    try:
-
-        quote = api.get_latest_quote(symbol)
-
-        ask = float(quote.ap) if quote.ap else 0
-        bid = float(quote.bp) if quote.bp else 0
-
-        return ask, bid
-
-    except Exception as e:
-
-        print(f"QUOTE ERROR: {e}", flush=True)
-
-        return 0, 0
-
 def get_trade_price(symbol):
 
     try:
@@ -90,7 +73,7 @@ def get_trade_price(symbol):
 
     except Exception as e:
 
-        print(f"TRADE ERROR: {e}", flush=True)
+        print(f"TRADE PRICE ERROR: {e}", flush=True)
 
         return 0
 
@@ -102,7 +85,7 @@ def calc_qty(notional, price):
     return int(notional / price)
 
 # =========================================================
-# EXTENDED HOURS BUY LIMIT
+# EXTENDED BUY LIMIT
 # =========================================================
 
 def get_extended_buy_limit(symbol):
@@ -112,19 +95,59 @@ def get_extended_buy_limit(symbol):
         quote = api.get_latest_quote(symbol)
 
         ask = float(quote.ap) if quote.ap else 0
+        bid = float(quote.bp) if quote.bp else 0
 
         print(f"BUY ASK: {ask}", flush=True)
+        print(f"BUY BID: {bid}", flush=True)
 
-        if ask <= 0:
+        # =================================================
+        # PRIMARY = ASK
+        # =================================================
+
+        reference_price = ask
+
+        # =================================================
+        # FALLBACK TO BID
+        # =================================================
+
+        if reference_price <= 0:
+
+            reference_price = bid
+
+            print(
+                f"USING BID FALLBACK: {reference_price}",
+                flush=True
+            )
+
+        # =================================================
+        # FALLBACK TO LAST TRADE
+        # =================================================
+
+        if reference_price <= 0:
+
+            trade = api.get_latest_trade(symbol)
+
+            reference_price = float(trade.price)
+
+            print(
+                f"USING TRADE FALLBACK: {reference_price}",
+                flush=True
+            )
+
+        # =================================================
+        # TOTAL FAILURE
+        # =================================================
+
+        if reference_price <= 0:
 
             return None
 
         # =================================================
-        # AGGRESSIVE PREMARKET BUY
+        # AGGRESSIVE BUY LIMIT
         # =================================================
 
         limit_price = round(
-            ask * 1.03,
+            reference_price * 1.03,
             2
         )
 
@@ -142,7 +165,7 @@ def get_extended_buy_limit(symbol):
         return None
 
 # =========================================================
-# EXTENDED HOURS SELL LIMIT
+# EXTENDED SELL LIMIT
 # =========================================================
 
 def get_extended_sell_limit(symbol):
@@ -157,11 +180,18 @@ def get_extended_sell_limit(symbol):
 
         if bid <= 0:
 
-            return None
+            trade = api.get_latest_trade(symbol)
 
-        # =================================================
-        # AGGRESSIVE PREMARKET SELL
-        # =================================================
+            bid = float(trade.price)
+
+            print(
+                f"USING TRADE FALLBACK FOR SELL: {bid}",
+                flush=True
+            )
+
+        if bid <= 0:
+
+            return None
 
         limit_price = round(
             bid * 0.99,
@@ -203,7 +233,7 @@ def sell_qty(symbol, qty, is_extended=False):
             if not limit_price:
 
                 print(
-                    "FAILED TO BUILD SELL LIMIT",
+                    "FAILED TO CREATE SELL LIMIT",
                     flush=True
                 )
 
@@ -353,6 +383,7 @@ def already_fired(symbol, signal):
     now = pytime.time()
 
     if key in last_signal and now - last_signal[key] < 2:
+
         return True
 
     last_signal[key] = now
@@ -377,6 +408,10 @@ def webhook():
 
         data = None
 
+        # =================================================
+        # JSON PARSE
+        # =================================================
+
         try:
 
             data = request.get_json(force=True, silent=True)
@@ -385,12 +420,19 @@ def webhook():
 
             pass
 
+        # =================================================
+        # MANUAL JSON PARSE
+        # =================================================
+
         if not data and raw_bytes:
 
             try:
 
                 data = json.loads(
-                    raw_bytes.decode("utf-8", errors="ignore")
+                    raw_bytes.decode(
+                        "utf-8",
+                        errors="ignore"
+                    )
                 )
 
             except:
@@ -405,28 +447,17 @@ def webhook():
                 "status": "no_data"
             }), 200
 
+        # =================================================
+        # PARSE SIGNAL
+        # =================================================
+
         symbol = data.get("ticker") or data.get("symbol")
         raw_signal = data.get("signal")
-
-        try:
-
-            notional = float(
-                data.get("notional", DEFAULT_NOTIONAL)
-            )
-
-        except:
-
-            notional = DEFAULT_NOTIONAL
 
         signal = normalize_signal(raw_signal)
 
         print(
             f"FINAL PARSED → {symbol} | '{raw_signal}' → {signal}",
-            flush=True
-        )
-
-        print(
-            f"NOTIONAL RECEIVED: {notional}",
             flush=True
         )
 
@@ -437,6 +468,8 @@ def webhook():
             }), 200
 
         if already_fired(symbol, signal):
+
+            print("DUPLICATE BLOCKED", flush=True)
 
             return jsonify({
                 "status": "duplicate"
@@ -457,6 +490,24 @@ def webhook():
 
         if signal == "OPEN_LONG":
 
+            try:
+
+                notional = float(
+                    data.get(
+                        "notional",
+                        DEFAULT_NOTIONAL
+                    )
+                )
+
+            except:
+
+                notional = DEFAULT_NOTIONAL
+
+            print(
+                f"NOTIONAL RECEIVED: {notional}",
+                flush=True
+            )
+
             if qty_pos > 0:
 
                 return jsonify({
@@ -465,11 +516,25 @@ def webhook():
 
             last_price = get_trade_price(symbol)
 
-            qty = calc_qty(notional, last_price)
+            print(
+                f"LAST PRICE: {last_price}",
+                flush=True
+            )
 
-            print(f"LAST PRICE: {last_price}", flush=True)
-            print(f"QTY: {qty}", flush=True)
-            print(f"EST VALUE: {qty * last_price}", flush=True)
+            qty = calc_qty(
+                notional,
+                last_price
+            )
+
+            print(
+                f"QTY: {qty}",
+                flush=True
+            )
+
+            print(
+                f"EST VALUE: {qty * last_price}",
+                flush=True
+            )
 
             if qty <= 0:
 
@@ -520,8 +585,13 @@ def webhook():
 
                 if not limit_price:
 
+                    print(
+                        "FAILED TO CREATE BUY LIMIT",
+                        flush=True
+                    )
+
                     return jsonify({
-                        "status": "bad_limit_price"
+                        "status": "bad_limit"
                     }), 200
 
                 try:
@@ -563,7 +633,10 @@ def webhook():
 
         if signal == "EXIT_LONG":
 
-            print("EXIT SIGNAL RECEIVED", flush=True)
+            print(
+                "EXIT SIGNAL RECEIVED",
+                flush=True
+            )
 
             close_position(symbol, extended)
 
@@ -603,7 +676,11 @@ def webhook():
 
         if sold > 0:
 
-            sell_qty(symbol, sold, extended)
+            sell_qty(
+                symbol,
+                sold,
+                extended
+            )
 
             print(
                 f"{signal}: SOLD {sold} OF {int(qty)}",
@@ -616,7 +693,10 @@ def webhook():
 
     except Exception as e:
 
-        print(f"WEBHOOK ERROR: {e}", flush=True)
+        print(
+            f"WEBHOOK ERROR: {e}",
+            flush=True
+        )
 
         return jsonify({
             "status": "error"
@@ -628,7 +708,9 @@ def webhook():
 
 if __name__ == "__main__":
 
-    port = int(os.environ.get("PORT", 10000))
+    port = int(
+        os.environ.get("PORT", 10000)
+    )
 
     app.run(
         host="0.0.0.0",
