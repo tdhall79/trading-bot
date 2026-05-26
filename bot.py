@@ -25,8 +25,8 @@ api = tradeapi.REST(
 DEFAULT_NOTIONAL = 3500
 
 # Smaller offsets = more fills
-BUY_PREMIUM = 0.005     # +0.5%
-SELL_DISCOUNT = 0.005  # -0.5%
+BUY_PREMIUM = 0.005
+SELL_DISCOUNT = 0.005
 
 last_signal = {}
 
@@ -452,7 +452,147 @@ def webhook():
             flush=True
         )
 
+        # =================================================
+        # RAW TEXT FALLBACK
+        # =================================================
+
         if not data:
+
+            raw_text = raw_bytes.decode(
+                "utf-8",
+                errors="ignore"
+            ).strip()
+
+            print(
+                f"RAW TEXT FALLBACK: {raw_text}",
+                flush=True
+            )
+
+            upper = raw_text.upper()
+
+            # =============================================
+            # UNRESOLVED TV PLACEHOLDER
+            # =============================================
+
+            if "{{STRATEGY.ORDER.ALERT.MESSAGE}}" in upper:
+
+                print(
+                    "UNRESOLVED TV PLACEHOLDER DETECTED",
+                    flush=True
+                )
+
+                try:
+
+                    positions = api.list_positions()
+
+                    if positions:
+
+                        print(
+                            "CLOSING ALL POSITIONS FAILSAFE",
+                            flush=True
+                        )
+
+                        extended = not is_regular_hours()
+
+                        for pos in positions:
+
+                            symbol = pos.symbol
+
+                            qty = float(pos.qty)
+
+                            if qty > 0:
+
+                                print(
+                                    f"FAILSAFE CLOSE: {symbol}",
+                                    flush=True
+                                )
+
+                                close_position(
+                                    symbol,
+                                    extended
+                                )
+
+                    else:
+
+                        print(
+                            "NO OPEN POSITIONS",
+                            flush=True
+                        )
+
+                except Exception as e:
+
+                    print(
+                        f"FAILSAFE ERROR: {e}",
+                        flush=True
+                    )
+
+                return jsonify({
+                    "status": "tv_placeholder"
+                }), 200
+
+            # =============================================
+            # RAW EXIT TEXT
+            # =============================================
+
+            if any(x in upper for x in [
+                "EXITLONG",
+                "CLOSELONG",
+                "EXIT",
+                "CLOSE",
+                "SL",
+                "BREAKEVEN",
+                "BE"
+            ]):
+
+                print(
+                    "RAW EXIT DETECTED",
+                    flush=True
+                )
+
+                try:
+
+                    positions = api.list_positions()
+
+                    extended = not is_regular_hours()
+
+                    for pos in positions:
+
+                        symbol = pos.symbol
+
+                        qty = float(pos.qty)
+
+                        if qty > 0:
+
+                            close_position(
+                                symbol,
+                                extended
+                            )
+
+                except Exception as e:
+
+                    print(
+                        f"RAW EXIT ERROR: {e}",
+                        flush=True
+                    )
+
+                return jsonify({
+                    "status": "raw_exit"
+                }), 200
+
+            # =============================================
+            # RAW LONG TEXT
+            # =============================================
+
+            if "LONG" in upper:
+
+                print(
+                    "RAW LONG TEXT DETECTED",
+                    flush=True
+                )
+
+                return jsonify({
+                    "status": "raw_long_ignored"
+                }), 200
 
             return jsonify({
                 "status": "no_data"
