@@ -255,13 +255,13 @@ def webhook():
             sell_qty(symbol, int(qty * 0.20), extended)
 
         elif signal == "TP2":
-            sell_qty(symbol, int(qty * 0.20), extended)
+            sell_qty(symbol, int(qty * 0.10), extended)
 
         elif signal == "TP3":
-            sell_qty(symbol, int(qty * 0.20), extended)
+            sell_qty(symbol, int(qty * 0.05), extended)
 
         elif signal == "TP4":
-            sell_qty(symbol, int(qty * 0.10), extended)
+            sell_qty(symbol, int(qty * 0.05), extended)
 
         return jsonify({"status": "processed"}), 200
 
