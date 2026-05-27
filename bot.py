@@ -24,10 +24,17 @@ api = tradeapi.REST(
 
 DEFAULT_NOTIONAL = 3500
 
-# Smaller offsets = more fills
-BUY_PREMIUM = 0.005     # +0.5%
-SELL_DISCOUNT = 0.005  # -0.5%
+# =========================================================
+# EXTENDED HOURS AGGRESSION
+# =========================================================
 
+NORMAL_BUY_PREMIUM = 0.01
+NORMAL_SELL_DISCOUNT = 0.01
+
+CHEAP_STOCK_BUY_PREMIUM = 0.02
+CHEAP_STOCK_SELL_DISCOUNT = 0.02
+
+# Duplicate alert protection
 last_signal = {}
 
 # =========================================================
@@ -52,7 +59,7 @@ def is_regular_hours():
     return time(9, 30) <= now <= time(16, 0)
 
 # =========================================================
-# POSITION HELPERS
+# POSITION HELPER
 # =========================================================
 
 def get_position(symbol):
@@ -61,11 +68,47 @@ def get_position(symbol):
 
         pos = api.get_position(symbol)
 
-        return float(pos.qty)
+        qty = float(pos.qty)
+
+        print(
+            f"CURRENT POSITION {symbol}: {qty}",
+            flush=True
+        )
+
+        return qty
 
     except:
 
         return 0
+
+# =========================================================
+# GET QUOTE
+# =========================================================
+
+def get_quote(symbol):
+
+    try:
+
+        quote = api.get_latest_quote(symbol)
+
+        bid = float(quote.bid_price or 0)
+        ask = float(quote.ask_price or 0)
+
+        print(
+            f"QUOTE {symbol} | BID: {bid} | ASK: {ask}",
+            flush=True
+        )
+
+        return bid, ask
+
+    except Exception as e:
+
+        print(
+            f"QUOTE ERROR: {e}",
+            flush=True
+        )
+
+        return 0, 0
 
 # =========================================================
 # LAST TRADE PRICE
@@ -96,28 +139,30 @@ def get_trade_price(symbol):
         return 0
 
 # =========================================================
-# SAFE BUY LIMIT
+# EXTENDED BUY LIMIT
 # =========================================================
 
 def get_extended_buy_limit(symbol):
 
     try:
 
-        trade = api.get_latest_trade(symbol)
+        bid, ask = get_quote(symbol)
 
-        last_price = float(trade.price)
+        if ask <= 0:
 
-        print(
-            f"BUY LAST TRADE: {last_price}",
-            flush=True
-        )
+            ask = get_trade_price(symbol)
 
-        if last_price <= 0:
+        if ask <= 0:
 
             return None
 
+        premium = NORMAL_BUY_PREMIUM
+
+        if ask < 20:
+            premium = CHEAP_STOCK_BUY_PREMIUM
+
         limit_price = round(
-            last_price * (1 + BUY_PREMIUM),
+            ask * (1 + premium),
             2
         )
 
@@ -138,28 +183,30 @@ def get_extended_buy_limit(symbol):
         return None
 
 # =========================================================
-# SAFE SELL LIMIT
+# EXTENDED SELL LIMIT
 # =========================================================
 
 def get_extended_sell_limit(symbol):
 
     try:
 
-        trade = api.get_latest_trade(symbol)
+        bid, ask = get_quote(symbol)
 
-        last_price = float(trade.price)
+        if bid <= 0:
 
-        print(
-            f"SELL LAST TRADE: {last_price}",
-            flush=True
-        )
+            bid = get_trade_price(symbol)
 
-        if last_price <= 0:
+        if bid <= 0:
 
             return None
 
+        discount = NORMAL_SELL_DISCOUNT
+
+        if bid < 20:
+            discount = CHEAP_STOCK_SELL_DISCOUNT
+
         limit_price = round(
-            last_price * (1 - SELL_DISCOUNT),
+            bid * (1 - discount),
             2
         )
 
@@ -189,110 +236,9 @@ def calc_qty(notional, price):
 
         return 0
 
-    return int(notional / price)
+    qty = int(notional / price)
 
-# =========================================================
-# SELL HELPERS
-# =========================================================
-
-def sell_qty(symbol, qty, is_extended=False):
-
-    if qty <= 0:
-
-        return
-
-    try:
-
-        # =================================================
-        # EXTENDED HOURS SELL
-        # =================================================
-
-        if is_extended:
-
-            limit_price = get_extended_sell_limit(symbol)
-
-            if not limit_price:
-
-                print(
-                    "FAILED TO CREATE SELL LIMIT",
-                    flush=True
-                )
-
-                return
-
-            order = api.submit_order(
-                symbol=symbol,
-                qty=qty,
-                side="sell",
-                type="limit",
-                time_in_force="day",
-                limit_price=limit_price,
-                extended_hours=True
-            )
-
-            print(
-                f"LIMIT SELL {qty} {symbol} @ {limit_price}",
-                flush=True
-            )
-
-            print(
-                f"SELL ORDER ID: {order.id}",
-                flush=True
-            )
-
-        # =================================================
-        # REGULAR HOURS SELL
-        # =================================================
-
-        else:
-
-            order = api.submit_order(
-                symbol=symbol,
-                qty=qty,
-                side="sell",
-                type="market",
-                time_in_force="day"
-            )
-
-            print(
-                f"MARKET SELL {qty} {symbol}",
-                flush=True
-            )
-
-            print(
-                f"SELL ORDER ID: {order.id}",
-                flush=True
-            )
-
-    except Exception as e:
-
-        print(
-            f"SELL ERROR: {e}",
-            flush=True
-        )
-
-# =========================================================
-# CLOSE POSITION
-# =========================================================
-
-def close_position(symbol, is_extended=False):
-
-    qty = get_position(symbol)
-
-    if qty > 0:
-
-        sell_qty(
-            symbol,
-            qty,
-            is_extended
-        )
-
-    else:
-
-        print(
-            f"NO POSITION TO CLOSE FOR {symbol}",
-            flush=True
-        )
+    return qty
 
 # =========================================================
 # SIGNAL NORMALIZER
@@ -377,13 +323,125 @@ def already_fired(symbol, signal):
 
     now = pytime.time()
 
-    if key in last_signal and now - last_signal[key] < 2:
+    if key in last_signal:
 
-        return True
+        elapsed = now - last_signal[key]
+
+        if elapsed < 2:
+
+            print(
+                f"DUPLICATE BLOCKED ({elapsed:.2f}s)",
+                flush=True
+            )
+
+            return True
 
     last_signal[key] = now
 
     return False
+
+# =========================================================
+# SELL HELPER
+# =========================================================
+
+def sell_qty(symbol, qty, extended=False):
+
+    if qty <= 0:
+
+        return
+
+    try:
+
+        # =================================================
+        # EXTENDED HOURS SELL
+        # =================================================
+
+        if extended:
+
+            limit_price = get_extended_sell_limit(symbol)
+
+            if not limit_price:
+
+                print(
+                    "FAILED TO CREATE SELL LIMIT",
+                    flush=True
+                )
+
+                return
+
+            order = api.submit_order(
+                symbol=symbol,
+                qty=qty,
+                side="sell",
+                type="limit",
+                limit_price=limit_price,
+                time_in_force="day",
+                extended_hours=True
+            )
+
+            print(
+                f"LIMIT SELL {qty} {symbol} @ {limit_price}",
+                flush=True
+            )
+
+            print(
+                f"SELL ORDER ID: {order.id}",
+                flush=True
+            )
+
+        # =================================================
+        # REGULAR HOURS SELL
+        # =================================================
+
+        else:
+
+            order = api.submit_order(
+                symbol=symbol,
+                qty=qty,
+                side="sell",
+                type="market",
+                time_in_force="day"
+            )
+
+            print(
+                f"MARKET SELL {qty} {symbol}",
+                flush=True
+            )
+
+            print(
+                f"SELL ORDER ID: {order.id}",
+                flush=True
+            )
+
+    except Exception as e:
+
+        print(
+            f"SELL ERROR: {e}",
+            flush=True
+        )
+
+# =========================================================
+# CLOSE POSITION
+# =========================================================
+
+def close_position(symbol, extended=False):
+
+    qty = get_position(symbol)
+
+    if qty <= 0:
+
+        print(
+            f"NO POSITION TO CLOSE FOR {symbol}",
+            flush=True
+        )
+
+        return
+
+    sell_qty(
+        symbol,
+        qty,
+        extended
+    )
 
 # =========================================================
 # WEBHOOK
@@ -414,7 +472,7 @@ def webhook():
         data = None
 
         # =================================================
-        # JSON PARSE
+        # STANDARD JSON PARSE
         # =================================================
 
         try:
@@ -429,7 +487,7 @@ def webhook():
             pass
 
         # =================================================
-        # MANUAL JSON PARSE
+        # FALLBACK JSON PARSE
         # =================================================
 
         if not data and raw_bytes:
@@ -459,10 +517,14 @@ def webhook():
             }), 200
 
         # =================================================
-        # PARSE SIGNAL
+        # PARSE PAYLOAD
         # =================================================
 
-        symbol = data.get("ticker") or data.get("symbol")
+        symbol = (
+            data.get("ticker")
+            or data.get("symbol")
+        )
+
         raw_signal = data.get("signal")
 
         signal = normalize_signal(raw_signal)
@@ -478,31 +540,40 @@ def webhook():
                 "status": "bad_payload"
             }), 200
 
-        if already_fired(symbol, signal):
+        # =================================================
+        # DUPLICATE FILTER
+        # =================================================
 
-            print(
-                "DUPLICATE BLOCKED",
-                flush=True
-            )
+        if already_fired(symbol, signal):
 
             return jsonify({
                 "status": "duplicate"
             }), 200
 
-        qty_pos = get_position(symbol)
+        # =================================================
+        # SESSION
+        # =================================================
 
         extended = not is_regular_hours()
 
         print(
-            f"CURRENT POSITION {symbol}: {qty_pos}",
+            f"EXTENDED HOURS: {extended}",
             flush=True
         )
+
+        qty_pos = get_position(symbol)
 
         # =================================================
         # OPEN LONG
         # =================================================
 
         if signal == "OPEN_LONG":
+
+            if qty_pos > 0:
+
+                return jsonify({
+                    "status": "already_in_position"
+                }), 200
 
             try:
 
@@ -518,19 +589,23 @@ def webhook():
                 notional = DEFAULT_NOTIONAL
 
             print(
-                f"NOTIONAL RECEIVED: {notional}",
+                f"NOTIONAL: {notional}",
                 flush=True
             )
 
-            if qty_pos > 0:
+            # =============================================
+            # USE ASK PRICE FOR ACCURATE PREMARKET SIZING
+            # =============================================
 
-                return jsonify({
-                    "status": "already_in_position"
-                }), 200
+            bid, ask = get_quote(symbol)
 
-            last_price = get_trade_price(symbol)
+            reference_price = ask
 
-            if last_price <= 0:
+            if reference_price <= 0:
+
+                reference_price = get_trade_price(symbol)
+
+            if reference_price <= 0:
 
                 return jsonify({
                     "status": "bad_price"
@@ -538,7 +613,7 @@ def webhook():
 
             qty = calc_qty(
                 notional,
-                last_price
+                reference_price
             )
 
             print(
@@ -547,7 +622,7 @@ def webhook():
             )
 
             print(
-                f"EST VALUE: {qty * last_price}",
+                f"EST VALUE: {qty * reference_price}",
                 flush=True
             )
 
@@ -611,8 +686,8 @@ def webhook():
                         qty=qty,
                         side="buy",
                         type="limit",
-                        time_in_force="day",
                         limit_price=limit_price,
+                        time_in_force="day",
                         extended_hours=True
                     )
 
