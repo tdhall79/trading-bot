@@ -751,16 +751,16 @@ def webhook():
         sold = 0
 
         if signal == "TP1":
-            sold = int(qty * 0.20)
+            sold = int(qty * 1.0)
 
         elif signal == "TP2":
-            sold = int(qty * 0.10)
+            sold = int(qty * 1.0)
 
         elif signal == "TP3":
-            sold = int(qty * 0.05)
+            sold = int(qty * 1.0)
 
         elif signal == "TP4":
-            sold = int(qty * 0.05)
+            sold = int(qty * 1.0)
 
         if sold > 0:
 
