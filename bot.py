@@ -192,7 +192,6 @@ def get_extended_sell_limit(symbol):
 try:
     bid, ask = get_quote(symbol)
     trade_price = get_trade_price(symbol)
-    # Fallback hierarchy
     if trade_price <= 0:
         if bid > 0:
             trade_price = bid
@@ -200,14 +199,12 @@ try:
             trade_price = ask
         else:
             return None
-    # Detect abnormal spreads
     if bid > 0 and ask > 0:
         spread_pct = abs(ask - bid) / ask
         print(
             f"SPREAD %: {spread_pct:.4f}",
             flush=True
         )
-        # If spread exceeds 3%, trust trade price
         if spread_pct > 0.03:
             reference_price = trade_price
             print(
@@ -243,9 +240,6 @@ except Exception as e:
         flush=True
     )
     return None
-# =========================================================
-# EXTENDED SELL LIMIT
-# =========================================================
 
 
 
