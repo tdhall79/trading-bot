@@ -189,56 +189,82 @@ def get_extended_buy_limit(symbol):
 
 def get_extended_sell_limit(symbol):
 
-try:
+    try:
+
     bid, ask = get_quote(symbol)
+
     trade_price = get_trade_price(symbol)
+
     if trade_price <= 0:
+
         if bid > 0:
             trade_price = bid
+
         elif ask > 0:
             trade_price = ask
+
         else:
             return None
+
     if bid > 0 and ask > 0:
+
         spread_pct = abs(ask - bid) / ask
+
         print(
             f"SPREAD %: {spread_pct:.4f}",
             flush=True
         )
+
         if spread_pct > 0.03:
+
             reference_price = trade_price
+
             print(
                 f"WIDE SPREAD DETECTED - USING TRADE PRICE {reference_price}",
                 flush=True
             )
+
         else:
+
             reference_price = max(
                 bid,
                 trade_price
             )
+
     else:
+
         reference_price = trade_price
+
     discount = NORMAL_SELL_DISCOUNT
+
     if reference_price < 20:
+
         discount = CHEAP_STOCK_SELL_DISCOUNT
+
     limit_price = round(
         reference_price * (1 - discount),
         2
     )
+
     print(
         f"REFERENCE PRICE: {reference_price}",
         flush=True
     )
+
     print(
         f"FINAL SELL LIMIT: {limit_price}",
         flush=True
     )
+
     return limit_price
+
 except Exception as e:
+
     print(
         f"SELL LIMIT ERROR: {e}",
         flush=True
     )
+
     return None
 
 
