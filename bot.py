@@ -181,92 +181,90 @@ def get_extended_buy_limit(symbol):
         )
 
         return None
+
 # =========================================================
-
 # EXTENDED SELL LIMIT
-
 # =========================================================
 
 def get_extended_sell_limit(symbol):
 
     try:
 
-    bid, ask = get_quote(symbol)
+        bid, ask = get_quote(symbol)
 
-    trade_price = get_trade_price(symbol)
+        trade_price = get_trade_price(symbol)
 
-    if trade_price <= 0:
+        if trade_price <= 0:
 
-        if bid > 0:
-            trade_price = bid
+            if bid > 0:
+                trade_price = bid
 
-        elif ask > 0:
-            trade_price = ask
+            elif ask > 0:
+                trade_price = ask
 
-        else:
-            return None
+            else:
+                return None
 
-    if bid > 0 and ask > 0:
+        if bid > 0 and ask > 0:
 
-        spread_pct = abs(ask - bid) / ask
-
-        print(
-            f"SPREAD %: {spread_pct:.4f}",
-            flush=True
-        )
-
-        if spread_pct > 0.03:
-
-            reference_price = trade_price
+            spread_pct = abs(ask - bid) / ask
 
             print(
-                f"WIDE SPREAD DETECTED - USING TRADE PRICE {reference_price}",
+                f"SPREAD %: {spread_pct:.4f}",
                 flush=True
             )
 
+            if spread_pct > 0.03:
+
+                reference_price = trade_price
+
+                print(
+                    f"WIDE SPREAD DETECTED - USING TRADE PRICE {reference_price}",
+                    flush=True
+                )
+
+            else:
+
+                reference_price = max(
+                    bid,
+                    trade_price
+                )
+
         else:
 
-            reference_price = max(
-                bid,
-                trade_price
-            )
+            reference_price = trade_price
 
-    else:
+        discount = NORMAL_SELL_DISCOUNT
 
-        reference_price = trade_price
+        if reference_price < 20:
 
-    discount = NORMAL_SELL_DISCOUNT
+            discount = CHEAP_STOCK_SELL_DISCOUNT
 
-    if reference_price < 20:
+        limit_price = round(
+            reference_price * (1 - discount),
+            2
+        )
 
-        discount = CHEAP_STOCK_SELL_DISCOUNT
+        print(
+            f"REFERENCE PRICE: {reference_price}",
+            flush=True
+        )
 
-    limit_price = round(
-        reference_price * (1 - discount),
-        2
-    )
+        print(
+            f"FINAL SELL LIMIT: {limit_price}",
+            flush=True
+        )
 
-    print(
-        f"REFERENCE PRICE: {reference_price}",
-        flush=True
-    )
+        return limit_price
 
-    print(
-        f"FINAL SELL LIMIT: {limit_price}",
-        flush=True
-    )
+    except Exception as e:
 
-    return limit_price
+        print(
+            f"SELL LIMIT ERROR: {e}",
+            flush=True
+        )
 
-except Exception as e:
-
-    print(
-        f"SELL LIMIT ERROR: {e}",
-        flush=True
-    )
-
-    return None
-
+        return None
 
 
 # =========================================================
