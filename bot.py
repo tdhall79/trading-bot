@@ -574,7 +574,7 @@ def webhook():
         signal = normalize_signal(raw_signal)
 
         print(
-            f"FINAL PARSED → {symbol} | '{raw_signal}' → {signal}",
+            f"FINAL PARSED â {symbol} | '{raw_signal}' â {signal}",
             flush=True
         )
 
@@ -638,65 +638,64 @@ def webhook():
             )
 
             # =============================================
-            # USE ASK PRICE FOR ACCURATE PREMARKET SIZING
+            # CALCULATE QTY
             # =============================================
 
             if extended:
 
-    limit_price = get_extended_buy_limit(symbol)
+                limit_price = get_extended_buy_limit(symbol)
 
-    if not limit_price:
+                if not limit_price:
 
-        return jsonify({
-            "status": "bad_limit"
-        }), 200
+                    return jsonify({
+                        "status": "bad_limit"
+                    }), 200
 
-    qty = calc_qty(
-        notional,
-        limit_price
-    )
+                qty = calc_qty(
+                    notional,
+                    limit_price
+                )
 
-    print(
-        f"QTY: {qty}",
-        flush=True
-    )
+                print(
+                    f"QTY: {qty}",
+                    flush=True
+                )
 
-    print(
-        f"EST VALUE: {qty * limit_price}",
-        flush=True
-    )
+                print(
+                    f"EST VALUE: {qty * limit_price}",
+                    flush=True
+                )
 
-else:
+            else:
 
-    bid, ask = get_quote(symbol)
+                bid, ask = get_quote(symbol)
 
-    reference_price = ask
+                reference_price = ask
 
-    if reference_price <= 0:
+                if reference_price <= 0:
 
-        reference_price = get_trade_price(symbol)
+                    reference_price = get_trade_price(symbol)
 
-    if reference_price <= 0:
+                if reference_price <= 0:
 
-        return jsonify({
-            "status": "bad_price"
-        }), 200
+                    return jsonify({
+                        "status": "bad_price"
+                    }), 200
 
-    qty = calc_qty(
-        notional,
-        reference_price
-    )
+                qty = calc_qty(
+                    notional,
+                    reference_price
+                )
 
-    print(
-        f"QTY: {qty}",
-        flush=True
-    )
+                print(
+                    f"QTY: {qty}",
+                    flush=True
+                )
 
-    print(
-        f"EST VALUE: {qty * reference_price}",
-        flush=True
-    )
-
+                print(
+                    f"EST VALUE: {qty * reference_price}",
+                    flush=True
+                )
 
             if qty <= 0:
 
@@ -743,13 +742,7 @@ else:
 
             else:
 
-                
-
-                if not limit_price:
-
-                    return jsonify({
-                        "status": "bad_limit"
-                    }), 200
+                limit_price = get_extended_buy_limit(symbol)
 
                 try:
 
@@ -880,3 +873,4 @@ if __name__ == "__main__":
         port=port,
         threaded=True
     )
+
