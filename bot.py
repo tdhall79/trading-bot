@@ -641,34 +641,62 @@ def webhook():
             # USE ASK PRICE FOR ACCURATE PREMARKET SIZING
             # =============================================
 
-            bid, ask = get_quote(symbol)
+            if extended:
 
-            reference_price = ask
+    limit_price = get_extended_buy_limit(symbol)
 
-            if reference_price <= 0:
+    if not limit_price:
 
-                reference_price = get_trade_price(symbol)
+        return jsonify({
+            "status": "bad_limit"
+        }), 200
 
-            if reference_price <= 0:
+    qty = calc_qty(
+        notional,
+        limit_price
+    )
 
-                return jsonify({
-                    "status": "bad_price"
-                }), 200
+    print(
+        f"QTY: {qty}",
+        flush=True
+    )
 
-            qty = calc_qty(
-                notional,
-                reference_price
-            )
+    print(
+        f"EST VALUE: {qty * limit_price}",
+        flush=True
+    )
 
-            print(
-                f"QTY: {qty}",
-                flush=True
-            )
+else:
 
-            print(
-                f"EST VALUE: {qty * reference_price}",
-                flush=True
-            )
+    bid, ask = get_quote(symbol)
+
+    reference_price = ask
+
+    if reference_price <= 0:
+
+        reference_price = get_trade_price(symbol)
+
+    if reference_price <= 0:
+
+        return jsonify({
+            "status": "bad_price"
+        }), 200
+
+    qty = calc_qty(
+        notional,
+        reference_price
+    )
+
+    print(
+        f"QTY: {qty}",
+        flush=True
+    )
+
+    print(
+        f"EST VALUE: {qty * reference_price}",
+        flush=True
+    )
+
 
             if qty <= 0:
 
@@ -715,7 +743,7 @@ def webhook():
 
             else:
 
-                limit_price = get_extended_buy_limit(symbol)
+                
 
                 if not limit_price:
 
